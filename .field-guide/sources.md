@@ -474,3 +474,29 @@ folds** (each ~44–52 k train / 6–9 k test candidates) and D3 artefacts; the 
 arithmetic (a filter needs to remove a sub-population winning 9.7 % against a 32.7 % base) and
 L4's "necessary condition". The binding constraint is the rule layer and the cost model, not the
 model.
+
+## 2026-11-23 — the Twelve Data lake mirror is an EQUITIES dataset: no CME futures in any split
+`twelvedata/financial-world-model` (a registered lake source) has `bars_1min` in three splits:
+`train` 18,234,755 rows / `val` 4,818,994 / `test` 9,250,050 — random partitions of one dataset.
+Full symbol-column scans:
+- **train**: 129 distinct tickers, **no NQ / ES / MES / MNQ / YM / GC / CL**; every ticker is a stock
+  or ETF (e.g. `AOM`, `XFLT.PRA`, `HEI.A`, `REGN`).
+- **val**: same, **no futures**.
+- **test** (9,250,050 rows): the local byte-scan stalled at 233 MB (this host's egress), so it was
+  replaced by a **server-side sample** of the rows API at offsets 0 / 2,000,000 / 5,000,000 / 8,000,000:
+  `AAPL`, `AMD`, `WMT`, `T` — all stocks, and the split is **ordered by ticker** (each window returns a
+  single symbol), so the sweep across offsets walks the ticker universe.
+
+**Inference (and it is a strong one):** with 129 tickers over 32.3 M rows, each ticker holds ~250 k rows
+and therefore appears in *every* split. NQ/ES appearing in neither train nor val means they are not in
+the dataset at all. The card's tags confirm it: `finance, equities, ohlcv, technical-indicators,
+world-model` — **equities, not futures**.
+
+**Do not run the local byte-scan on this host.** `pyarrow`'s chunk reads pull ~2x the file before the
+column is complete; at 69 KB/s a 1.86 GB file does not finish. Use the datasets-server `rows` API with
+strided offsets (the splits are ticker-ordered, so a strided sweep recovers the universe) — it costs
+one small request per offset.
+
+**Consequence:** multi-year CME (NQ/ES) 1-minute history is **not** obtainable from the free mirrors.
+The only routes are **Databento** (~$10–30 for a few years of NQ/ES 1m, which is what the design doc
+already recommends) or a broker/exchange feed. Do not spend more time hunting free futures mirrors.

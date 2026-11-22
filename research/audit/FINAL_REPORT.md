@@ -81,6 +81,7 @@ sourced; today only VXN (NQT/QQQ), DVOL (crypto) and CMC20 (crypto cross-section
 | | |
 |---|---|
 | **Sufficient for phase 1 on NQ?** | **No.** The lake holds NQ/ES **1-minute only for one week** (7,490 / 7,489 rows). The missing thing is not "1-minute NQ" but **multi-year 1-minute NQ **per contract** with a documented roll rule** — a roll gap prints like a liquidity sweep. |
+| **Free mirrors for CME 1m?** | **None.** Every free mirror was scanned: Twelve Data's lake source is an **equities** dataset (129 stock/ETF tickers, zero futures, in all three splits), Yahoo serves ~1–2 days of 1-minute, cryptohftdata has no candle family, OKX needs ~14,000 requests per symbol. **Databento (~$10–30) is the only route** — exactly what the design doc already recommends. |
 | **Sufficient on crypto?** | **Conditional.** BTCUSDT/ETHUSDT have **2,046,240 gap-free 1-minute bars** (2023-01-01 → 2026-11-21) and support the 6/1/1 walk-forward arithmetically (40 folds). |
 | **Top missing items** | ① multi-year NQ+ES 1m per contract + roll rule (**Databento, ~$100–300**); ② the roll-rule detector; ③ intraday VXN/VIX; ④ order-book imbalance for NQ. |
 
