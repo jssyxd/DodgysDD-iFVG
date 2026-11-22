@@ -24,7 +24,7 @@ Clone all five into `research/github/`, one directory each:
 - `research/github/dataBaseLake`
 
 ## How
-- Credentials: `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` (user `jssyxd`, repo-read only, expires 2027-02-18).
+- Credentials: `$GITHUB_TOKEN` (user `jssyxd`, repo-read only, expires 2027-02-18).
   Use `git -c http.extraheader="Authorization: Bearer <token>" clone --depth 1 <url> <dir>`
   if an anonymous clone is rate-limited or fails. Do NOT write the token into any tracked file.
 - `microsoft/qlib` is large. If `--depth 1` still exceeds ~3 GB, clone it shallow WITHOUT submodules and

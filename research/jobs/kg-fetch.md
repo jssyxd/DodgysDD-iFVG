@@ -23,7 +23,7 @@ Download datasets 1 and 2 in full into `research/kaggle/`, one directory each:
 
 ## How
 - The `kaggle` CLI is at `/home/da/.local/bin/kaggle`. Auth via env:
-  `KAGGLE_USERNAME=jssyxd KAGGLE_KEY=KGAT_ac40707589c873af896d44997f6c0d40`
+  `KAGGLE_USERNAME=jssyxd KAGGLE_KEY=$KAGGLE_KEY`
 - Use `kaggle datasets download -d <ref> -p <dir> --unzip` (add `--force` if a partial dir exists).
 - Do NOT write the Kaggle key into any file under the project.
 

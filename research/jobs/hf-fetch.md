@@ -27,7 +27,7 @@ Download all three into `research/huggingface/`:
 - `research/huggingface/ict-6000-mentorship-master/`
 
 ## How
-- Token: `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`. The `hf` CLI is at `/home/da/.local/bin/hf`.
+- Token: `$HUGGINGFACE_TOKEN`. The `hf` CLI is at `/home/da/.local/bin/hf`.
   Use `HF_TOKEN=<token> hf download <repo_id> --local-dir <dir>`.
 - Use `--exclude` only if a file is clearly irrelevant AND huge; prefer complete downloads for the detector
   (weights are essential). Log every file with its size.

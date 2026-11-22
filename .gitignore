@@ -1,10 +1,23 @@
-# research artefacts fetched from external sources (large binaries)
+# ---- secrets (never commit) ----
+一些必备apikey和环境.txt
+*.env
+.env
+!.env.example
+
+# ---- external research corpus (large binaries; re-fetchable, see .field-guide/sources.md) ----
 research/github/
 research/huggingface/
 research/kaggle/
-# secrets
-一些必备apikey和环境.txt
-.env
-# python
+
+# ---- data + model artefacts ----
+data/
+artifacts/
+research/candidates/
+*.parquet
+*.zip
+
+# ---- agent runtime state ----
+.pi/
+.herd-dispatch/
 __pycache__/
 *.pyc

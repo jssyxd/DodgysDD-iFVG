@@ -45,7 +45,7 @@ Working form: `GIT_TERMINAL_PROMPT=0 git clone --depth 1 "https://x-access-token
 Note the token ends up in `.git/config` — strip it afterwards (`git remote set-url origin https://github.com/...`).
 
 ## 2026-11-22 — the Hugging Face token in the notes is EXPIRED
-`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` belongs to user `opclown1` and returns
+`$HUGGINGFACE_TOKEN` belongs to user `opclown1` and returns
 `{"error":"User Access Token \"opclown1\" is expired"}` from `/api/whoami-v2`. The stale token is cached at
 `~/.cache/huggingface/token` and silently breaks even **unauthenticated** downloads (the CLI sends it and the
 server answers 401/404, so `hf download` reports "Model not found"). Fix: `mv ~/.cache/huggingface/token
