@@ -73,6 +73,17 @@ a bullish gap) — the two reports **agree** here.
 
 ### A.1.3 `graceCandles` and the [0,15] vs [7,15] conclusion — **VERIFIED**
 
+
+> **CORRECTION (2026-11-22, leaf L2).** The statement that the inversion window is
+> **[0, 15]** with **no lower bound**, and that the FVG's own newest candle can be the
+> confirmation candle (age 0), is **wrong**. Age 0 is **arithmetically impossible**:
+> a bullish FVG requires `low[c] > high[c-2]`, while the age-0 trigger requires
+> `close[c] < high[c-2]`, and `close[c] >= low[c]`; symmetrically for the bearish case.
+> Verified empirically: over 423,759 BTCUSDT 1-minute candidates the trigger-age
+> histogram starts at **age 1** and **no candidate triggers at age 0**.
+> The effective window is **[1, 15]**. See `research/audit/L2_RULES.md` §A.5.
+
+
 `pine:L658` reproduced verbatim: `int graceCandles = allowExtIFVG ? 15 : 6;`, and the expiry at
 `pine:L499-500`:
 

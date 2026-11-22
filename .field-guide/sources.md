@@ -163,8 +163,13 @@ is built. Treat the phase-1 negative result as a likely outcome to be *measured*
 Note the "7–15 candles" phrase in the README matches the doc, while the code is
 `graceCandles = allowExtIFVG ? 15 : 6` — an **upper bound only**, with **no lower bound**. Because the
 trigger is evaluated with `close[1]`, the inversion may be confirmed on the FVG's own newest candle
-(age 0), so the real window is **[0, 15] bars from `fvgBar1`** (or [0, 6] with the toggle off). The doc's
-"7–15" lower bound **does not exist in code**. Full derivation: `research/analysis/PINE_RULES.md` §R13–R15,
+(age 0), so the real window is **[1, 15] bars from `fvgBar1`** (or [1, 6] with the toggle off). The doc's
+"7–15" lower bound **does not exist in code**. **CORRECTION (leaf L2, 2026-11-22):** an earlier
+note here said the window was [0, 15] and that age 0 was reachable. That is **wrong**: age 0 is
+arithmetically impossible (a bullish FVG needs `low[c] > high[c-2]`, the age-0 trigger needs
+`close[c] < high[c-2]`, and `close[c] >= low[c]`; symmetric for bearish). Verified empirically —
+over 423,759 BTCUSDT 1m candidates the trigger-age histogram starts at **age 1**, with **zero**
+candidates triggering at age 0. Full derivation: `research/analysis/PINE_RULES.md` §R13–R15,
 §D.1.
 
 ## 2026-11-22 — the data lake ALREADY has NQ + ES 1-minute continuous futures

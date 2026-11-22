@@ -44,7 +44,18 @@ This document therefore separates three tiers of evidence:
 ### 0.3 The five headline findings
 
 1. **No ATR filter, no minimum-gap coefficient.** `grep -ni "atr"` over the whole file returns **nothing**. The gap is measured **edge-to-edge on wicks** and *any* strictly-positive gap qualifies. The doc's `gap > 0.25 * ATR(14)` has **no counterpart in this code at all**.
-2. **The inversion window is `0–15` bars, not `7–15`.** `graceCandles = allowExtIFVG ? 15 : 6` (pine:L658) is only an **upper bound**; there is no lower bound. The confirmation candle may be the very candle that completes the FVG (age 0). The label "Allow 7 - 15 Candle IFVGs" (pine:L9) is inherited UI text — the tooltip in the same line says "may form within 15 candles", contradicting the title.
+2. **The inversion window is `0–15` bars, not `7–15`.**
+
+
+> **CORRECTION (2026-11-22, leaf L2).** The statement that the inversion window is
+> **[0, 15]** with **no lower bound**, and that the FVG's own newest candle can be the
+> confirmation candle (age 0), is **wrong**. Age 0 is **arithmetically impossible**:
+> a bullish FVG requires `low[c] > high[c-2]`, while the age-0 trigger requires
+> `close[c] < high[c-2]`, and `close[c] >= low[c]`; symmetrically for the bearish case.
+> Verified empirically: over 423,759 BTCUSDT 1-minute candidates the trigger-age
+> histogram starts at **age 1** and **no candidate triggers at age 0**.
+> The effective window is **[1, 15]**. See `research/audit/L2_RULES.md` §A.5.
+ `graceCandles = allowExtIFVG ? 15 : 6` (pine:L658) is only an **upper bound**; there is no lower bound. The confirmation candle may be the very candle that completes the FVG (age 0). The label "Allow 7 - 15 Candle IFVGs" (pine:L9) is inherited UI text — the tooltip in the same line says "may form within 15 candles", contradicting the title.
 3. **There is no scoring system and no A+/A/B/C grade in the code.** No points, no score variable, no cutoffs. The only "score-like" artefact is a cosmetic `"+"`/`"-"` suffix and a volume dot in the label text (pine:L453-454).
 4. **No SMT, no PDH/PDL, no EQH/EQL, no OB, no killzone filter.** The only liquidity reference is a **3-bar fractal on manually aggregated HTF swing highs/lows** (pine:L619-630). The doc's session windows exist in the code **only as alert filters** (pine:L123-126, L497-498).
 5. **`hideLosing` really does erase losers post-hoc** — and it is `true` by default. On a stop hit the box, entry line and label are deleted and the record is removed from `setupRecords` (pine:L519-525). The doc's warning is confirmed at the code level.

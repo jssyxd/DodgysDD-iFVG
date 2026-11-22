@@ -38,7 +38,9 @@ No look-ahead: the trigger uses a bar that has strictly closed; the fill is the 
 the `code:close(k)` arm, the confirmation close). If a bar touches both the stop and the 2R target, the
 **stop wins** (conservative).
 
-**Arms (pre-registered):** inversion window `code[0,15]` vs `doc[7,15]` · ATR floor `none` vs `0.25×ATR(14)`
+**Arms (pre-registered):** inversion window `code[0,15]` vs `doc[7,15]`
+(the `code` arm's lower bound is unreachable in practice — age 0 is arithmetically impossible,
+so the effective window is **[1,15]**; see `research/audit/L2_RULES.md` §A.5) · ATR floor `none` vs `0.25×ATR(14)`
 · fill `open(k)` vs `close(k-1)` · sweep gate `off` (code default) vs `on` (doc) · **concurrency
 `concurrent` (census) vs `one-at-a-time` (portfolio)**.
 
