@@ -179,7 +179,7 @@ gate off) — i.e. the reference implementation's own semantics (R2):
 |---|---|---|
 | Bars | 2,046,240 | 2,046,240 |
 | 3-candle FVG candidates formed | **677,155** | **605,235** |
-| Candidates that triggered into a trade | 423,772 | 376,140 |
+| Candidates that triggered into a trade | 423,772 | ≥ 376,137 |
 | Closed trades — **census** (all candidates) | **423,759** | **376,137** |
 | Census win rate (hit 2R) | **34.45 %** (145,980) | 34.30 % |
 | Census `E[R]_gross` | **+0.0335** | +0.0290 |
@@ -991,7 +991,7 @@ number of registered trials, and report the **PBO** from CSCV over the 40 folds.
 `DSR > 0.95`** (i.e. the probability that the observed Sharpe exceeds the best of `N` trials by chance
 is < 5 %).
 
-`[INFERENCE]` **What the bar is in R.** With `N ≈ 80` trials, the expected best-of-80 Sharpe sits near
+`[INFERENCE]` **What the bar is in R.** With `N ≈ 90` trials, the expected best-of-90 Sharpe sits near
 **2.6σ**, so the observed statistic must clear roughly **t ≈ 3** on the per-trade R series (measured
 per-trade σ ≈ 1.407 R). That converts to a net expectancy of `3 × 1.407 / √n`:
 
@@ -1084,9 +1084,10 @@ E2E PIPELINE:  Ten gated stages with one named artefact per hand-off: governed
    Nautilus catalog + FuturesContract (tick $5 NQ / $12.50 ES) → rule engine →
    research/candidates/{symbol}_{timeframe}.parquet (D2, every candidate) → features +
    labels → artifacts/models/{symbol}/{asof}/ (D3) → concatenated walk-forward OOS
-   equity curve → RL policy (optional) → 4+ weeks of LiveNode paper trading with a
-   quantitative slippage-parity assertion (median ≤ backtest + 1 tick, P(>backtest+2)
-   < 0.05, fill-rate gap < 10 %) → live. Every gate is a pre-registered numeric test;
+   equity curve → RL policy (optional) → 4 weeks of LiveNode paper trading (the doc's
+   parity gate; ≥3 months to be evidence about the *edge*) with a quantitative
+   slippage-parity assertion (median ≤ backtest + 1 tick, P(>backtest+2) < 0.05,
+   fill-rate gap < 10 %) → live. Every gate is a pre-registered numeric test;
    a negative phase-1 result is a rule-reproduction defect to be reported, never masked.
 ```
 
