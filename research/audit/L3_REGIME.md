@@ -18,8 +18,18 @@ dispatched; no `decisions.md` edit.
 **Decisions this leaf obeys and does not re-litigate:** D1 (the four-layer system is *not*
 implemented), D2 (the frozen candidate-log schema), D4 (the rule engine has no measured edge;
 one-position-at-a-time is the only quoting basis; the census arm's t = 15.28 is an artefact),
-D5 (data reality), D6 (vision gate re-spec), D8 (no grade filtering), D9 (costs live in the
-config), D10 (read the upstream corpus read-only).
+D5 (data reality — with one amendment proposed in §B.1), D6 (vision gate re-spec), D8 (no grade
+filtering), D9 (costs live in the config), D10 (read the upstream corpus read-only), D12 (the
+vision layer is not a gate), D13 (the rule engine is rebuilt as a new package; the E-1 script
+stays the falsification harness and the source of the baseline — which is exactly the harness
+this leaf's exploratory analysis uses).
+
+**D13 checked against this leaf's numbers.** D13 corrects the inversion window from `[0,15]` to
+`[1,15]`, on the grounds that age 0 is arithmetically impossible. **Verified here on the
+regenerated trade lists: every arm's minimum observed trigger age is 1 and the count at age 0 is
+exactly 0** (15 928 / 19 189 / 16 075 / 13 204 trades; ages 0 → 0). `[INFERENCE]` `[0,15]` and
+`[1,15]` therefore select the **identical trade set**, and **no number in §C.4 / §C.5 changes
+under D13**.
 
 ---
 
@@ -48,13 +58,14 @@ config), D10 (read the upstream corpus read-only).
 
 **The headline exploratory result (§C.4):** on the one market where a regime-conditioned test can
 be run today with real data (BTCUSDT 1-minute, 3.9 years, 15,928 one-position-at-a-time trades),
-the doc's literal VXN bands produce a *nominally* significant band contrast in one of four
-pre-registered rule arms — but the same variable expressed scale-free (trailing-1-year tertiles)
-gives **p = 0.85**, a self-referential **realised-volatility control** gives a *smaller* effect,
-and the contrast **collapses to p = 0.85 when the inversion window changes from `[0,15]` to
-`[7,15]`**. After Holm correction over 16 comparisons nothing survives. This is the exact
-signature D4 describes for the unconditional edge: *a result that does not survive a defensible
-re-parameterisation.*
+the doc's literal VXN bands produce a *nominally* significant band contrast (p = 0.039 and
+p = 0.026) in **two of four** pre-registered rule arms — but the same variable expressed
+scale-free (trailing-1-year tertiles) gives **p = 0.85** in the very same arm, the contrast
+**collapses to p = 0.854 when the inversion window changes from `[0,15]` to `[7,15]`**, and a
+self-referential **realised-volatility control** is the *only* variable that survives Holm
+correction anywhere in the family. After Holm across all 16 comparisons (4 variables × 4 arms)
+nothing survives. This is the exact signature D4 describes for the unconditional edge: *a result
+that does not survive a defensible re-parameterisation.*
 
 ---
 
@@ -166,7 +177,7 @@ All rows below were verified by reading the files on the **canonical NFS mount**
 | **DVOL** | `03_governed_lake/v2_parquet_lake/macro/dvol/BTCDVOL_1h_consolidated.parquet` | **26,665** bars, 2023-10-01 → 2026-10-16 | 1 h | ✅ governed, ❌ **not registered** — `manifest.json` `macro_indices` lists **only** VXN | ⚠️ `timestamp` is int64 **nanoseconds** while VXN's is int64 **milliseconds** — same column name, same directory, two units. See B.3 |
 | **GVZ** (gold, GC row of the migration table) | — | **absent everywhere** | — | — | — |
 | **DXY, GSPC, RVX, OVX, VVIX** | — | **absent** (`find` over the whole lake returns nothing) | — | — | — |
-| **SPX / NDX** (index *levels*, not volatility) | `nautilus_databank/equities_indices/{SPX,NDX}/1d` + `catalog/data/bar/{SPX.CBOE,NDX.NASDAQ}-1-DAY-LAST-EXTERNAL` | 1,692 / 1,695 daily bars, 2020-01-02 → 2026-09-25 | daily | ✅ governed area (`nautilus_databank`) | n/a — a *direction* variable, not a volatility one |
+| **SPX / NDX** (index *levels*, not volatility) | `nautilus_databank/equities_indices/{SPX,NDX}/1d/{2020…2026}.parquet` + `catalog/data/bar/{SPX.CBOE,NDX.NASDAQ}-1-DAY-LAST-EXTERNAL` | **1,692 daily bars each**, 2020-01-02 → 2026-09-25 | daily | ✅ governed area (`nautilus_databank`) | n/a — a *direction* variable, not a volatility one |
 
 `[FACT]` **Correction to D5.** D5 says *"VIX is NOT ingested."* That is true of the **governed
 parquet lake** (`macro/` contains only `vxn/` and `dvol/`). It is **not** true of the lake as a
@@ -241,9 +252,12 @@ than merely advised.
 
 `[INFERENCE]` `corr(ΔVXN, ΔVIX) = 0.054` says something the level correlation hides: the two
 indices agree about the *level* of equity-market fear but say almost nothing about its
-*change*. A regime feature built on a change rate (the doc's dropped "1-hour change rate") would
-therefore have been nearly orthogonal to VXN's own change — i.e. it would have been a **different
-feature wearing VXN's name**.
+**overnight change**. `[FACT]` (scope note) that is a **daily**-change statistic; the doc's
+dropped feature was an **intraday** change rate, which was not measurable and is not measured
+here. `[INFERENCE]` The implication for the design is the same either way: on the available data
+the two indices carry **one** common factor (the level), and a "change"-flavoured regime feature
+would have been a *different* feature wearing VXN's name — which is a second, independent reason
+to keep the dropped 1-hour feature dropped.
 
 ### B.5 The regime variation that actually exists in the usable samples
 
@@ -277,11 +291,12 @@ records its own iteration results:
 48h Ch +10d Trend + CVD (DVOL < 75%),       CAGR  0.55, Sharpe  0.12, 382 trades
 ```
 
-`[INFERENCE]` A volatility-regime gate moved two of six variants from negative to ~zero and
-changed Sharpe by ≤ 0.14, while cutting the trade count by 10–13 %. This is a **third-party
-strategy in the same lake** and it is not ours, so it is not a result about the iFVG pattern — but
-it is the closest thing to prior evidence available on "does a DVOL regime gate help?", and its
-answer is "marginally, on a strategy that is losing money anyway".
+`[INFERENCE]` Adding the DVOL gate **improved all three** channel/trend variants (CAGR
+−9.95 → −7.84, −0.63 → **+0.55**, −0.9 → −0.59); one crossed from negative to positive, two
+improved but stayed negative; Sharpe moved by ≤ 0.14 while the trade count fell 10–18 %. This is
+a **third-party strategy in the same lake** and it is not ours, so it is not a result about the
+iFVG pattern — but it is the closest thing to prior evidence available on "does a DVOL regime gate
+help?", and its answer is "marginally, on a strategy that is losing money anyway".
 
 ---
 
@@ -337,7 +352,9 @@ test on the cluster labels**:
    enough to preserve the regime's own autocorrelation (volatility clusters last weeks);
 3. randomly re-order the blocks (2,000 replications);
 4. recompute the band contrast under each re-assignment;
-5. report `p = (#{replicates with |stat| ≥ |observed|} + 1) / (2000 + 1)`.
+5. report `p = (#{replicates with stat ≥ observed} + 1) / (2000 + 1)`, where the statistic is the
+   **band spread** `max_b E[R|b] − min_b E[R|b]` (a two-sided statistic on the family, since it
+   is the larger of the two absolute band contrasts).
 
 This preserves: the trade→cluster mapping, the trade weights, the within-cluster correlation, and
 the regime's serial structure. A naive shuffle of the labels would destroy the regime's
@@ -398,7 +415,8 @@ must be known at that instant, not at the session's end.
 ### C.4 What a first, exploratory run says (EXPLORATORY — not a result)
 
 `[FACT]` **Method.** The D2 candidate log does not exist yet, so the exploratory run regenerated
-it from the existing E-1 machinery, unchanged:
+it from the existing E-1 machinery, unchanged (D13 keeps that script as the falsification
+harness and the source of the baseline):
 `research/experiments/e1_rule_falsification.py` was imported as a module and re-run on
 **BTCUSDT 1-minute**, 2,046,240 governed bars (2023-01-01 → 2026-11-21), in four pre-registered
 arms. **The reproduction is exact**: the baseline arm returned **n = 15,928, E[R] = −0.0197**
@@ -492,17 +510,19 @@ removes nearly all of the within-session dependence — the D4 trap does not rec
 |---|---|---|
 | two groups of 5,309 (three equal bands) | **0.0765 R** | 0.0795 R |
 | band 0 (n 2 895) vs band 1 (n 11 772) — the observed sizes | **0.0818 R** | 0.0850 R |
+| band 2 (n 1 261) vs band 1 (n 11 772) — the high-vol policy's contrast | **0.1168 R** | ≈ 0.121 R |
 | one band of 5,309 vs zero | **0.0541 R** | 0.0562 R |
 | all 15,928 vs zero | 0.0312 R | 0.0324 R |
 
 `[FACT]` **Context that makes those numbers bite:** E-1 measured the expectancy of **all 32 arms**
 in the range **[−0.024 R, +0.014 R]** (`E1_RESULTS.md` §3.0) — a **total envelope of 0.038 R**.
-`[INFERENCE]` **The MDD for a band contrast (0.077–0.085 R) is ≈ 2× the entire
-arm-to-arm expectancy envelope of the strategy.** A regime effect worth acting on would have to be
-*twice as large as every defensible change of window, ATR floor, fill rule and sweep gate
-combined*. That is the single most important number in this section: **the regime hypothesis is
-not merely unproven — it is not economically distinguishable from parameter noise at this sample
-size.**
+`[INFERENCE]` **The MDD for a band contrast (0.077 R for the best-powered pair, 0.085 R for the
+observed low-vs-normal pair, 0.117 R for high-vs-normal) is 2–3× the entire arm-to-arm
+expectancy envelope of the strategy (0.038 R).** A regime effect worth acting on would have to be
+*two to three times larger than every defensible change of window, ATR floor, fill rule and
+sweep gate combined*. That is the single most important number in this section: **the regime
+hypothesis is not merely unproven — at this sample size it is not economically distinguishable
+from parameter noise.**
 
 `[FACT]` **QQQ 15-minute (the only long US-equity intraday sample in the lake):** 73,325 bars,
 2022-10-14 → 2026-10-14, 1,003 VXN trading days (bands 158 / 749 / 96). The same E-1 engine on
@@ -746,10 +766,10 @@ REGIME IN RL STATE:             no
   signal* that the user asked about.
 - `[FACT]` An **exploratory** conditional-expectancy test was run on BTCUSDT 1 m (15,928
   one-position-at-a-time trades, 4 arms, 4 regime variables, session-clustered CR1 + moving-block
-  permutation + Holm). Result: the doc's absolute VXN bands reach p = 0.039 in one arm and
-  p = 0.85 in another; the scale-free version of the same index gives p = 0.85 everywhere; the
-  **realised-volatility control** is the only variable that survives Holm; **nothing survives**
-  across all 16 comparisons.
+  permutation + Holm). Result: the doc's absolute VXN bands reach p = 0.039 and p = 0.026 in two
+  arms and p = 0.85 / p = 0.29 in the other two; the scale-free version of the same index gives
+  p = 0.85 in the same arm as the best VXN result; the **realised-volatility control** is the
+  only variable that survives Holm anywhere; **nothing survives** across all 16 comparisons.
 - `[FACT]` **D5 should be amended**: VIX *is* present in the lake (503 daily bars in the Nautilus
   catalog; a `vix_level` column in the vendored Twelve Data dataset) — but **not** in the governed
   parquet lake, **not** in the manifest, and dirty before 2024.
@@ -811,7 +831,7 @@ REGIME IN RL STATE:             no
   produced the D4 baseline. There is no train/test separation here; the point of the exercise is
   to measure the *magnitude* of any regime dependence, not to validate a trading rule.
 
-**Artefacts read (not modified):** `.herd-swarm/decisions.md` (D1–D11);
+**Artefacts read (not modified):** `.herd-swarm/decisions.md` (D1–D13);
 `iFVG几个模型的讨论.txt` (L76, L93, L95, L103–L109, L146, L151, L158–L163, L172, L177–L183,
 L207, L259–L269, L280); `diagram-四层正 EV 量化系统完整架构.svg`; `diagram-目录结构规划.svg`;
 `AGENTS.md`; `research/docs/RULE_SPEC.md` (§1.9, T07–T13, T26, T28, T46–T50, A09, A18, A19,
