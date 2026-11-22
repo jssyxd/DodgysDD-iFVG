@@ -228,3 +228,57 @@ upstream corpus — large binaries, re-fetchable from `.field-guide/sources.md`)
 **Note for leaves:** the repo root was `git init`-ed for this. That is why `--worktree` isolation is now
 possible. Worktrees therefore **do not** contain the gitignored upstream corpus — a leaf that needs it
 must read it read-only from `/home/da/桌面/DodgysDD_ifvg/research/...`.
+
+---
+
+## D12 — 2026-11-22 — The vision layer is **not** to be built as a gate (from leaf L1)
+
+**Decision.** Do not implement the discussion's vision layer as a *gate*. If it is built at all, build it
+as an **offline batch feature extractor** that fills the D2 columns `vision_iou` / `vision_confidence`,
+and only after the two experiments L1 names have run.
+
+**Why.** L1's arithmetic, against the D4 baseline (base win rate **w = 0.327**):
+
+- A gate that keeps a fraction `q` of candidates helps **only if the removed set is worse than the base**.
+  To reach the design's `PF > 1.25` while keeping 80 % of trades, the gate must remove a sub-population
+  whose win rate is **9.7 %** — roughly **3.4× better than random at finding losers**. Keeping 90 % of
+  trades cannot reach PF 1.25 at all (the ceiling is 0.363 < 0.385).
+- The shipped detector's labels are **hand-drawn FVG rectangles**. They contain **zero outcome
+  information**. Its precision/recall (0.888/0.908, mAP@50 0.932) measure *"is there an FVG here"*, not
+  *"will this trade make money"*. An outcome-uncorrelated filter leaves the expectancy **unchanged**
+  while shrinking the sample — and `t` scales as `1/√q`, so it strictly **dilutes** statistical power.
+- The mechanism the doc relies on (a human seeing "clean" structure) **is not implemented by this model
+  at all**: the dataset has no cleanliness label.
+
+**Consequences.**
+1. `VISION_IOU_THRESHOLD = 0.75` is **deleted** (D6 already replaced the metric).
+2. The ML feature set must **degrade gracefully** without the vision columns — the trainer excludes them
+   and records the exclusion in the artefact metadata.
+3. The vision layer is **not** on the critical path for phase 1.
+
+---
+
+## D13 — 2026-11-22 — The rule engine must be rebuilt, not patched (from leaf L2)
+
+**Decision.** Build `dodgys_dd_quant/strategy/` as a **new package** that satisfies the conformance
+matrix, rather than growing `research/experiments/e1_rule_falsification.py` into production. The
+experiment script stays as the *falsification harness* and remains the source of the baseline.
+
+**Why.** L2's tally over the 30-rule matrix: **8 faithful, 3 partial, 19 absent**. The existing code
+implements a *code-derived core* only — no killzones, no PDH/PDL, no session extremes, no SMT, no
+BE-intact gate, no checklist, no grade, and the sweep levels are not consumed once (so a level can be
+"swept" repeatedly, which the Pine does not allow).
+
+**Two corrections L2 established, both now applied to the sibling reports:**
+1. **The inversion window is [1, 15], not [0, 15].** Age 0 is arithmetically impossible — a bullish FVG
+   needs `low[c] > high[c-2]`, the age-0 trigger needs `close[c] < high[c-2]`, and `close[c] >= low[c]`
+   (symmetric for bearish). Verified empirically: over 423,759 BTCUSDT 1-minute candidates the
+   trigger-age histogram starts at **age 1**, with **zero** triggering at age 0.
+   `PINE_RULES` §0.3-2/§R15/§C-2 and `AUDIT` §A.1.3 carried the wrong claim; correction notes have been
+   added to both.
+2. **"Faithful to the doc" and "faithful to the Pine" are different rules.** The doc makes the killzone
+   a hard signal gate; the Pine makes it an **alert** filter and defaults to `0930-1600`. Both must be
+   configurable and A/B'd, never conflated.
+
+**Also fixed.** The doc's "A/A+" gate has no implementable definition (D8) → the checklist becomes five
+named booleans whose sum is `checklist_score`, **reported, never filtered on**.
