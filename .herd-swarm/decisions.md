@@ -194,3 +194,37 @@ at the absolute path `/home/da/桌面/DodgysDD_ifvg/research/...`, **read-only**
 
 The NFS lake at `~/iflow_lake` and `~/.cache/quant_db` are **shared** between all leaves. A leaf must
 not delete or overwrite another leaf's lake files; new writes go to leaf-owned paths.
+
+---
+
+## D11 — 2026-11-22 — The project is published to GitHub and synced from a single script
+
+**Decision.** `jssyxd/DodgysDD-iFVG` is the canonical remote. It was created **private** (the user has
+~100 repos, many public; this one is reversible in one click, and the lake's structure plus in-flight
+research should not be public by default). The remote URL is kept **credential-free**; the token is
+supplied at push time from the environment.
+
+```bash
+export GITHUB_TOKEN=<token>
+scripts/sync_github.sh              # commit + push
+scripts/sync_github.sh --check      # report drift, push nothing
+```
+
+**Credential hygiene — enforced, not merely intended.** Before the first push, four live tokens
+(GitHub PAT, Hugging Face, Kaggle, cryptohftdata) were found in tracked files and **scrubbed**, replaced
+by `$GITHUB_TOKEN` / `$HUGGINGFACE_TOKEN` / `$KAGGLE_KEY` / `$CRYPTOHFTDATA_API_KEY`. A pre-commit
+guard (`scripts/pre-commit-secret-scan.sh`, installed at `.git/hooks/pre-commit`) now blocks any commit
+that would introduce a live credential:
+- generic shapes (`ghp_*`, `hf_*`, `KGAT_*`, `sk-*`, `xoxb-*`, `AKIA*`, private-key headers),
+- the project's **known** token values, read from `.git/hooks/known_tokens.txt` — deliberately **outside**
+  the repository so the guard script itself never holds a credential and can be committed,
+- any file whose *name* looks like a secrets file.
+`一些必备apikey和环境.txt` is gitignored; `.env.example` carries **names only**.
+
+**What is not committed:** `research/github/`, `research/huggingface/`, `research/kaggle/` (the fetched
+upstream corpus — large binaries, re-fetchable from `.field-guide/sources.md`), plus `data/`,
+`artifacts/`, `research/candidates/`, `*.parquet`, `*.zip`, `.pi/` and `.herd-dispatch/`.
+
+**Note for leaves:** the repo root was `git init`-ed for this. That is why `--worktree` isolation is now
+possible. Worktrees therefore **do not** contain the gitignored upstream corpus — a leaf that needs it
+must read it read-only from `/home/da/桌面/DodgysDD_ifvg/research/...`.
