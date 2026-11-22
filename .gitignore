@@ -21,3 +21,12 @@ research/candidates/
 .herd-dispatch/
 __pycache__/
 *.pyc
+
+# ---- CI workflow parked ----
+# The project's GitHub token carries only the `repo` scope. GitHub refuses to
+# accept a file under .github/workflows/ from such a token (both git push and
+# the Contents API), so ci.yml is kept locally and pushed once a token with the
+# `workflow` scope is available, or uploaded manually via the GitHub web UI.
+# The equivalent protection runs locally: scripts/pre-commit-secret-scan.sh
+# (pre-commit) and scripts/pre-push-secret-scan.sh (pre-push).
+.github/workflows/ci.yml
