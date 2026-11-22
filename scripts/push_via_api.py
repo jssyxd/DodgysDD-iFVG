@@ -141,16 +141,29 @@ def main() -> int:
     def _skip(path: str) -> bool:
         return path.startswith(".github/workflows/")
 
+    # The file MODE matters: a tree entry created as 100644 turns every shell
+    # script into a non-executable file on the remote. Take the mode from git.
+    mode_of: dict[str, str] = {}
+    for line in subprocess.run(
+        ["git", "ls-files", "-s", "-z"], capture_output=True, check=True
+    ).stdout.decode().split("\0"):
+        if not line:
+            continue
+        meta, path = line.split("\t", 1)
+        mode_of[path] = meta.split()[0]
+
     tree_entries = []
     for path, sha in blobs.items():
         if _skip(path):
             print(f"  skipping {path} (needs the 'workflow' scope)")
             continue
-        tree_entries.append({"path": path, "mode": "100644", "type": "blob", "sha": sha})
+        tree_entries.append({"path": path, "mode": mode_of.get(path, "100644"),
+                             "type": "blob", "sha": sha})
     # keep remote-only files that are not tracked locally
     for path, sha in remote_files.items():
         if path not in blobs and not _skip(path):
-            tree_entries.append({"path": path, "mode": "100644", "type": "blob", "sha": sha})
+            tree_entries.append({"path": path, "mode": mode_of.get(path, "100644"),
+                                 "type": "blob", "sha": sha})
 
     new_tree = call("POST", f"/repos/{args.repo}/git/trees", token,
                     {"base_tree": base_tree, "tree": tree_entries})["sha"]

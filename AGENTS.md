@@ -80,6 +80,7 @@ scripts, do not trust the prose summaries.
 | `research/analysis/DATA_FEASIBILITY.md` | Whether phase 1 can start, and what is missing |
 | `research/audit/AUDIT.md` | Independent cross-audit of all of the above against source |
 | `research/nautilus/NAUTILUS_API.md` | Verified NautilusTrader 1.221.0 API map with a smoke-test log |
+| `research/audit/FINAL_REPORT.md` | **Start here.** The answers to Q1–Q5 and the build status |
 | `research/experiments/e1_rule_falsification.py` | The E-1 falsification test — **run it** |
 | `research/experiments/E1_RESULTS.md` | E-1's measured outcome |
 | `.field-guide/` | Append-only log of environment quirks and non-obvious invariants |
@@ -160,6 +161,31 @@ invariants — strict monotonic UTC timestamps, no duplicates, `High ≥ max(Ope
 "`volume == 0` implies `O == H == L == C`". Analytical lake = int64 **ms**, **left-open**, Parquet
 **Zstd-7**, atomic `.tmp` → rename. **No synthetic forward-fill.** Note: the lake's own auditor only
 tests `volume < 0`, so it **cannot** detect a zero-volume non-flat bar — verify that rule yourself.
+
+## What is built (and what it shows)
+
+`dodgys_dd_quant/` now exists and is verified end to end:
+- `strategy/` — the rule engine: causal swings, one-shot sweep levels, ATR gap floor, inversion window
+  `[1,15]`/`[7,15]`, BE-intact gate, checklist as five booleans (**reported, never filtered on**),
+  VXN regime with a one-day lag. Emits the **D2** candidate log verbatim.
+- `ml_pipeline/` — binary meta-labels, purged 6/1/1 walk-forward with an embargo tied to the label
+  horizon, LightGBM, **D3** artefacts, a Kaggle kernel generator that never sees the test fold.
+- `backtest/` — costs isolated in the config, **one position at a time**, per-fold model, the
+  forward-only guard that **raises** on a malformed fold, an **independent** rule-only baseline,
+  per-fold and deflated-Sharpe statistics.
+
+**79 tests pass** (2 skipped: they need LightGBM, which lives in `.venv-ml/`).
+
+**Measured on 2,046,240 real BTCUSDT 1-minute bars, 366,500 candidates, 39 folds:**
+
+| | n trades | E[R] gross | E[R] net | PF | t | 95 % CI |
+|---|---|---|---|---|---|---|
+| Rule only | 21,539 | −0.0002 | −0.4986 | 1.000 | −0.02 | [−0.019, +0.019] |
+| ML-gated (`P(Win) ≥ 0.58`) | 652 | +0.0675 | −0.5245 | 1.105 | 1.20 | [−0.043, +0.178] |
+
+The 1:2 break-even win rate is exactly 33.3 %; the measured win rate is 33.3 %. `auc_test` is
+**0.483–0.521** across all folds — the meta-labeler has no predictive power. The round-trip cost is
+**0.50–0.83 R** per trade while the break-even cost is **0.009 R**. **Phase 2 (ML) must not start.**
 
 ## Key Directories
 

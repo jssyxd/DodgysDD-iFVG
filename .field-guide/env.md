@@ -126,3 +126,18 @@ inference is 29–145 h for the candidate population.
 `kaggle datasets list --mine` intermittently fails with
 `SSLEOFError: [SSL: UNEXPECTED_EOF_WHILE_READING]` — the same TLS flakiness that breaks every other
 transfer on this host; retry rather than treating it as an auth failure.
+
+## 2026-11-23 — pushing to GitHub from this host needs the REST API, and workflows are impossible
+Three separate blockers, each measured:
+1. `git push` POSTs fail (`send-pack: unexpected disconnect`, `Empty reply from server`) while the
+   **GET** side works — the egress drops long-lived connections on the packfile upload.
+2. **Eight concurrent HTTPS POSTs all fail** (000) while a single POST succeeds in ~5 s. The host cannot
+   sustain parallel TLS connections, so the blob upload must be **strictly sequential**
+   (80 files ≈ 7 min).
+3. The project token carries **`repo` scope only**. GitHub refuses any tree entry under
+   `.github/workflows/` — from `git push` *and* from `POST /git/trees` (404 "Not Found"). The symptom
+   looks like a bad payload; it is a scope refusal. Keep workflow files untracked until a token with
+   the `workflow` scope exists.
+Working path: `scripts/sync_via_api.sh` -> `scripts/push_via_api.py` (blobs -> tree -> commit ->
+ref), then `git fetch origin && git reset --hard origin/main` so local and remote converge on the
+same commit.
