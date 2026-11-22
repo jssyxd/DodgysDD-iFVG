@@ -1,0 +1,10 @@
+# research artefacts fetched from external sources (large binaries)
+research/github/
+research/huggingface/
+research/kaggle/
+# secrets
+一些必备apikey和环境.txt
+.env
+# python
+__pycache__/
+*.pyc

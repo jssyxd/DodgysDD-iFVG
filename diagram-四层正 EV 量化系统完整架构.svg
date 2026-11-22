@@ -1,0 +1,163 @@
+<svg class="dark " xmlns="http://www.w3.org/2000/svg" viewBox="0 0 724.5 336" width="724.5" height="336" id="m70b238__root" data-diagram-type="ascii">
+  <style data-mercat-style="universal">.mercat text{font-family:'Google Sans',Roboto,Arial,sans-serif;fill:var(--m-text);dominant-baseline:central}.mercat .m-node .m-shape{fill:var(--m-node-fill);stroke:var(--m-node-stroke);stroke-width:1.5px}.mercat .m-edge .m-path{fill:none;stroke:var(--m-line);stroke-width:1.5px}.mercat .m-note .m-shape{fill:var(--m-note-fill);stroke:var(--m-note-stroke);stroke-width:1px}.mercat .m-note .m-label{fill:var(--m-note-text)}.mercat .t-label{font-size:13px;font-weight:500}</style>
+  <style data-mercat-style="theme-light">#m70b238__root{--m-bg:#ffffff;--m-text:#1f1f1f;--m-line:#545454;--m-node-fill:#f8f9fa;--m-node-stroke:#747775;--m-note-fill:#fef9e7;--m-note-stroke:#f39c12;--m-note-text:#1f1f1f}</style>
+  <style data-mercat-style="theme-dark">#m70b238__root.dark{--m-bg:#1f1f1f;--m-text:#e3e3e3;--m-line:#bfbfbf;--m-node-fill:#2d2e30;--m-node-stroke:#8e918f;--m-note-fill:#69550d;--m-note-stroke:#f39c12;--m-note-text:#e3e3e3}</style>
+  <style data-mercat-style="type">#m70b238__root .rect-pill,#m70b238__root .stadium-pill{fill:var(--m-bg);stroke:var(--m-node-stroke);stroke-width:1.5px}#m70b238__root .label-text{fill:var(--m-text);font-size:13px;font-weight:500;white-space:pre}#m70b238__root .arrow-line{fill:none;stroke:var(--m-line);stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round}#m70b238__root .annotation-text{fill:var(--m-text);font-size:12px;font-weight:500;white-space:pre}</style>
+  <style data-mercat-style="diagram">#m70b238__root text{font-family:Google Sans Mono, Roboto Mono, monospace}</style>
+  <g class="mercat mercat-ascii">
+    <defs>
+      <marker id="m70b238__mk-arrow" refX="9.45" refY="3.4" markerWidth="10.8" markerHeight="6.8" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+        <path d="M 0 0 L 10.8 3.4 L 0 6.8 Z" class="m-marker" fill="var(--m-line)" stroke="none"/>
+      </marker>
+    </defs>
+    <g class="m-node shape inner" id="m70b238__node__n0" data-role="step">
+      <rect x="15" y="15" width="361.5" height="20" rx="3" ry="3" class="m-shape rect-pill"/>
+      <text x="195.75" y="25" class="m-label t-label label-text" text-anchor="middle">数据层 : NQ + ES 1m/5m Tick/Bar + VXN 指数</text>
+    </g>
+    <g class="m-node shape inner" id="m70b238__node__n1" data-role="step">
+      <rect x="15" y="169" width="514.5" height="20" rx="3" ry="3" class="m-shape rect-pill"/>
+      <text x="272.25" y="179" class="m-label t-label label-text" text-anchor="middle">3. 元标签机器学习过滤器 (Meta-Labeling + LightGBM 滚动训练 )</text>
+    </g>
+    <g class="m-node shape inner" id="m70b238__node__n2" data-role="step">
+      <rect x="208.55" y="213" width="59.4" height="20" rx="10" ry="10" class="m-shape stadium-pill"/>
+      <text x="238.25" y="223" class="m-label t-label label-text" text-anchor="middle">Win</text>
+    </g>
+    <g class="m-node shape inner" id="m70b238__node__n3" data-role="step">
+      <rect x="15" y="279" width="531.5" height="20" rx="3" ry="3" class="m-shape rect-pill"/>
+      <text x="280.75" y="289" class="m-label t-label label-text" text-anchor="middle">4. 强化学习执行与风控代理 (PPO / SAC Agent in NautilusTrader)</text>
+    </g>
+    <g class="m-node shape inner" id="m70b238__node__n4" data-role="step">
+      <rect x="210.5" y="301" width="149" height="20" rx="3" ry="3" class="m-shape rect-pill"/>
+      <text x="285" y="311" class="m-label t-label label-text" text-anchor="middle">0.5x, 1.0x, 1.5x</text>
+    </g>
+    <g class="m-edge" id="m70b238__edge__pt__a0__0" data-role="connector">
+      <line x1="76.75" y1="69" x2="105.15" y2="69" class="m-path arrow-line" marker-end="url(#m70b238__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="m70b238__edge__a1__a2__0" data-role="connector">
+      <line x1="421" y1="69" x2="445.15" y2="69" class="m-path arrow-line" marker-end="url(#m70b238__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="m70b238__edge__pt__a9__0" data-role="connector">
+      <line x1="76.75" y1="113" x2="105.15" y2="113" class="m-path arrow-line" marker-end="url(#m70b238__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="m70b238__edge__a10__a11__0" data-role="connector">
+      <line x1="438" y1="113" x2="462.15" y2="113" class="m-path arrow-line" marker-end="url(#m70b238__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="m70b238__edge__n2__a28__0" data-role="connector">
+      <line x1="267.95" y1="223" x2="292.15" y2="223" class="m-path arrow-line" marker-end="url(#m70b238__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="m70b238__edge__n0__n1__0" data-role="connector">
+      <line x1="76.75" y1="35" x2="76.75" y2="167.65" class="m-path arrow-line" marker-end="url(#m70b238__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="m70b238__edge__n1__a23__0" data-role="connector">
+      <line x1="76.75" y1="189" x2="76.75" y2="193.6" class="m-path arrow-line"/>
+    </g>
+    <g class="m-edge" id="m70b238__edge__a23__a26__0" data-role="connector">
+      <line x1="76.75" y1="208.4" x2="76.75" y2="215.6" class="m-path arrow-line"/>
+    </g>
+    <g class="m-edge" id="m70b238__edge__a26__n3__0" data-role="connector">
+      <line x1="76.75" y1="230.4" x2="76.75" y2="277.65" class="m-path arrow-line" marker-end="url(#m70b238__mk-arrow)"/>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a0" data-role="annotation">
+      <text x="115" y="69" class="m-label t-label annotation-text" text-anchor="start">1. 确定性规则引擎</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a1" data-role="annotation">
+      <text x="268" y="69" class="m-label t-label annotation-text" text-anchor="start">(DodgysDD 状态机 )</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a2" data-role="annotation">
+      <text x="455" y="69" class="m-label t-label annotation-text" text-anchor="start">产</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a3" data-role="annotation">
+      <text x="472" y="69" class="m-label t-label annotation-text" text-anchor="start">生</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a4" data-role="annotation">
+      <text x="489" y="69" class="m-label t-label annotation-text" text-anchor="start">候</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a5" data-role="annotation">
+      <text x="506" y="69" class="m-label t-label annotation-text" text-anchor="start">选</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a6" data-role="annotation">
+      <text x="523" y="69" class="m-label t-label annotation-text" text-anchor="start">事</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a7" data-role="annotation">
+      <text x="540" y="69" class="m-label t-label annotation-text" text-anchor="start">件</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a8" data-role="annotation">
+      <text x="565.5" y="69" class="m-label t-label annotation-text" text-anchor="start">(Candidate Setup)</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a9" data-role="annotation">
+      <text x="115" y="113" class="m-label t-label annotation-text" text-anchor="start">2. 视觉交叉验证</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a10" data-role="annotation">
+      <text x="251" y="113" class="m-label t-label annotation-text" text-anchor="start">(YOLOv8/v26 图像检测 )</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a11" data-role="annotation">
+      <text x="472" y="113" class="m-label t-label annotation-text" text-anchor="start">识</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a12" data-role="annotation">
+      <text x="489" y="113" class="m-label t-label annotation-text" text-anchor="start">别</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a13" data-role="annotation">
+      <text x="506" y="113" class="m-label t-label annotation-text" text-anchor="start">图</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a14" data-role="annotation">
+      <text x="523" y="113" class="m-label t-label annotation-text" text-anchor="start">表</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a15" data-role="annotation">
+      <text x="540" y="113" class="m-label t-label annotation-text" text-anchor="start">形</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a16" data-role="annotation">
+      <text x="557" y="113" class="m-label t-label annotation-text" text-anchor="start">态</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a17" data-role="annotation">
+      <text x="574" y="113" class="m-label t-label annotation-text" text-anchor="start">与</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a18" data-role="annotation">
+      <text x="591" y="113" class="m-label t-label annotation-text" text-anchor="start">清</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a19" data-role="annotation">
+      <text x="608" y="113" class="m-label t-label annotation-text" text-anchor="start">晰</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a20" data-role="annotation">
+      <text x="625" y="113" class="m-label t-label annotation-text" text-anchor="start">度</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a21" data-role="annotation">
+      <text x="642" y="113" class="m-label t-label annotation-text" text-anchor="start">得</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a22" data-role="annotation">
+      <text x="659" y="113" class="m-label t-label annotation-text" text-anchor="start">分</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a23" data-role="annotation">
+      <text x="47" y="201" class="m-label t-label annotation-text" text-anchor="start">输入 : 规则评分</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a24" data-role="annotation">
+      <text x="174.5" y="201" class="m-label t-label annotation-text" text-anchor="start">+ 视觉置信度</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a25" data-role="annotation">
+      <text x="285" y="201" class="m-label t-label annotation-text" text-anchor="start">+ VXN Regime + 时间衰减特征</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a26" data-role="annotation">
+      <text x="47" y="223" class="m-label t-label annotation-text" text-anchor="start">输出 : 胜率预测概率</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a27" data-role="annotation">
+      <text x="208.5" y="223" class="m-label t-label annotation-text" text-anchor="start">P</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a28" data-role="annotation">
+      <text x="302" y="223" class="m-label t-label annotation-text" text-anchor="start">若</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a29" data-role="annotation">
+      <text x="327.5" y="223" class="m-label t-label annotation-text" text-anchor="start">P(Win) &lt; 阈值 (如</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a30" data-role="annotation">
+      <text x="472" y="223" class="m-label t-label annotation-text" text-anchor="start">0.58)，直接拦截放弃交易</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a31" data-role="annotation">
+      <text x="47" y="311" class="m-label t-label annotation-text" text-anchor="start">动作空间 : 仓位乘数</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a32" data-role="annotation">
+      <text x="370" y="311" class="m-label t-label annotation-text" text-anchor="start">+ 动态保本触发点</text>
+    </g>
+    <g class="m-node m-note" id="m70b238__note__a33" data-role="annotation">
+      <text x="514.5" y="311" class="m-label t-label annotation-text" text-anchor="start">(BE Trigger) + 分批止盈比例</text>
+    </g>
+  </g>
+</svg>
