@@ -111,3 +111,18 @@ BTCUSDT 1m 2,046,240 rows / ETHUSDT 1m 2,046,240 / QQQ 15m 73,325 / NQ 1m 7,490 
 ES **7,489** rows, both **2026-09-24 -> 2026-10-01**. This is the authoritative copy and it agrees with
 the local checkout. The `v2_parquet_lake/manifest` claim of `1m/5m/15m/1h/2h/4h/1d` for NQ/ES is
 **aspirational**; only `1m` (1 week) and `1h`/`1d` (multi-year) actually exist.
+
+## 2026-11-22 — Kaggle GPU quota verified independently (30 h/week, unused)
+`kaggle quota` (account `opclown1`) returns:
+```
+resource  used   remaining  total   refreshAt
+GPU       0.00h  30.00h     30.00h  2026-11-28T00:00:00+00:00
+TPU       0.00h  20.00h     20.00h  2026-11-28T00:00:00+00:00
+```
+So a Kaggle T4 GPU **is** available and **none** of the quota is spent. But the measured cost model
+(L5) says LightGBM needs **1.24 s/fold** on CPU and the whole 39-fold walk-forward is **55.6 s** locally —
+so **do not spend GPU quota on the meta-labeler**. Reserve it for the vision detector, whose CPU-only
+inference is 29–145 h for the candidate population.
+`kaggle datasets list --mine` intermittently fails with
+`SSLEOFError: [SSL: UNEXPECTED_EOF_WHILE_READING]` — the same TLS flakiness that breaks every other
+transfer on this host; retry rather than treating it as an auth failure.

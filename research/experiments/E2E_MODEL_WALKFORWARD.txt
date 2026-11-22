@@ -1,0 +1,60 @@
+data: /home/da/iflow_lake/iflow/database/03_governed_lake/v2_parquet_lake/crypto/futures_um/BTCUSDT/1m/BTCUSDT_1m_consolidated.parquet
+bars: 2046240  1672531200000000000 -> 1795305540000000000
+candidates: 366500
+feature frame: 366500 rows, 24 features
+
+====================================================================================================
+WALK-FORWARD REPORT  BTCUSDT 1m  preset=honest  window=(7, 15)
+cost profile: binance  slippage: 1 tick(s)
+====================================================================================================
+fold        mode         cands   appr  trades   win%     E[R]    E_net     PF      t                CI95
+--------------------------------------------------------------------------------------------------------
+2023-08-01  model         9373     27      14   57.1   0.7143  -0.1803  2.667   1.73      [-0.093,1.521]
+2023-09-01  model         8974     60      15   33.3   0.0000  -1.2239  1.000   0.00      [-0.741,0.741]
+2023-10-01  model         8124      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2023-11-01  model         7766      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2023-12-01  model         7830   2251     394   38.8   0.1650  -0.3554  1.270   2.24       [0.020,0.310]
+2024-01-01  model         7391      4       3    0.0  -1.0000  -1.2846  0.000    n/a     [-1.000,-1.000]
+2024-02-01  model         7285     14       5   20.0  -0.4000  -0.7033  0.500  -0.67      [-1.576,0.776]
+2024-03-01  model         6786      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2024-04-01  model         6526      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2024-05-01  model         7536      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2024-06-01  model         8526      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2024-07-01  model         7228      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2024-08-01  model         6957    226      93   28.0  -0.1613  -0.6138  0.776  -1.15      [-0.436,0.114]
+2024-09-01  model         7320     37      21   38.1   0.1429  -0.6685  1.231   0.44      [-0.496,0.781]
+2024-10-01  model         8020      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2024-11-01  model         6957      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2024-12-01  model         7393      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2025-01-01  model         7684      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2025-02-01  model         7412      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2025-03-01  model         7616      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2025-04-01  model         7517      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2025-05-01  model         8287      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2025-06-01  model         7921      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2025-07-01  model         8962      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2025-08-01  model         9293      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2025-09-01  model         9267      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2025-10-01  model         8567    124      59   27.1  -0.1864  -0.8904  0.744  -1.06      [-0.530,0.157]
+2025-11-01  model         7148      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2025-12-01  model         7756      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2026-01-01  model         8439      4       2   50.0   0.5000  -0.0156  2.000   0.33      [-2.440,3.440]
+2026-02-01  model         6157     47      28   35.7   0.0714  -0.7634  1.111   0.26      [-0.471,0.614]
+2026-03-01  model         6931      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2026-04-01  model         7471      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2026-05-01  model         8604     29      18   22.2  -0.3333  -1.5906  0.571  -1.10      [-0.926,0.260]
+2026-06-01  model         6803      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2026-07-01  model         8529      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2026-08-01  model         8704      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2026-09-01  model         8298      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2026-10-01  model         8902      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+2026-11-01  model         5354      0       0    nan      n/a      n/a    n/a    n/a           [n/a,n/a]
+--------------------------------------------------------------------------------------------------------
+PORTFOLIO (1 at a time, drop)    n=652     win%= 35.6  E[R]=  0.0675  E_net= -0.5245  PF= 1.105  t=  1.20  CI95=[-0.043,0.178]
+                                 mean cost=0.5920 R   break-even cost=0.0675 R   PF_net=0.496   total R=44.00   max consec losses=10
+BASELINE  (rule-only, drop)      n=21539   win%= 33.3  E[R]= -0.0002  E_net= -0.4986  PF= 1.000  t= -0.02  CI95=[-0.019,0.019]
+                                 mean cost=0.4983 R   break-even cost=-0.0002 R   PF_net=0.504   total R=-5.00   max consec losses=27
+
+candidates=366500  approved=2823  trades=652
+Sharpe (per trade) = 0.0469   deflated Sharpe = 0.1802   DSR p-value = 0.8198   trials = 32
+

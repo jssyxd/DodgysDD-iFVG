@@ -7,8 +7,9 @@
 inline; outputs are quoted verbatim or reduced to the measured figures. Nothing is carried over from another leaf
 except the frozen contracts (D2/D3/D4/D9) and the published E-1 result, which are cited as inputs, not re-measured.
 
-**Ownership:** this file is the only file this leaf created. All installs went into a throwaway venv
-(`/tmp/l5venv`); the project interpreter's site-packages, the NFS lake and the repo's own files were not modified.
+**Ownership:** this file is the only file this leaf created. All installs went into throwaway venvs under
+`/tmp` (`/tmp/l5venv`, `/tmp/l5venv2`); the project interpreter's site-packages, the NFS lake and the repo's
+other files were not modified.
 
 ---
 
@@ -19,7 +20,7 @@ except the frozen contracts (D2/D3/D4/D9) and the published E-1 result, which ar
 | Can this box train the meta-labeler? | **Yes, trivially.** A full 39-fold 6/1/1 walk-forward over 3.9 years of real BTCUSDT 1-minute data, with the D3 artefacts written to disk, takes **55.6 s**. |
 | Can this box train the vision detector? | **No GPU.** There is no CUDA and no ROCm on this host (AMD Radeon iGPU only). CPU inference is possible but ~2–3 orders of magnitude too slow for 448 k candidates. |
 | Is Kaggle usable? | **Yes.** CLI 2.2.5 authenticates, the account has ≥100 kernels and has **completed GPU kernel runs**, and `kaggle quota` reports **GPU 30.00 h / TPU 20.00 h** (verified, not assumed). |
-| Can the lake be pushed to Kaggle Datasets? | **Only the derived tables.** The Kaggle upload path measured **15.7 KB/s**; the 58 MB unit-of-transfer file needs on the order of an hour. Pushing the whole lake is a multi-day operation. |
+| Can the lake be pushed to Kaggle Datasets? | **Not from this box.** The Kaggle upload path measures **15.7 KB/s**, collapses to 1.5–2.7 KB/s under contention, and **failed twice on the 58 MB file** (resumable, but 53 % landed). Upload **code** and let the kernel fetch data over its own fast egress. |
 | Can we "train on Kaggle and roll locally"? | **Yes — and it is the wrong place to spend the effort.** The meta-labeler costs 1.2 s/fold locally; Kaggle buys nothing for it. Kaggle buys **GPU** for the vision layer only. The rolling *backtest* must stay local, causal, and paired against D4. |
 
 ---
@@ -203,6 +204,32 @@ declares four CUDA 13 dependencies that would be pulled on any Linux x86_64 inst
 Use the CPU index (`download.pytorch.org/whl/cpu`, 184 MB). `291 GB` of free disk would survive the CUDA
 mistake, but the 14 GiB RAM would not.
 
+`[FACT]` **The obvious CPU-index command does not work — it silently resolves the CUDA build.** This was
+measured, not theorised:
+
+```
+$ uv pip install --python /tmp/l5venv/bin/python \
+      --index-url https://download.pytorch.org/whl/cpu \
+      --extra-index-url https://pypi.org/simple torch torchvision ultralytics
+```
+
+With `--extra-index-url` in play, the resolver compares the CPU index against PyPI, picks the **newer**
+PyPI version (2.15.0), and pulls its CUDA 13 dependencies. In **13 minutes** it had already fetched
+**313.9 MB of `nvidia/cu13/*`** wheels (plus `triton`), before it was stopped. The cache showed the
+offending files directly: `nvidia/cu13/lib/libnvJitLink.so.13`, `libnvrtc.so.13`, `triton/_C/libtriton.so`.
+
+`[PROPOSAL]` **The command that actually works** — install the CPU build first, pinned, from the CPU index
+alone, and only then add the PyPI-only packages (whose `torch>=1.8.0` is then already satisfied and will
+not be re-resolved):
+
+```bash
+uv pip install --python /tmp/l5venv2/bin/python \
+    --index-url https://download.pytorch.org/whl/cpu \
+    "torch==2.9.1+cpu" "torchvision==0.29.1+cpu"
+uv pip install --python /tmp/l5venv2/bin/python \
+    --extra-index-url https://pypi.org/simple ultralytics
+```
+
 ### A.9 Package managers
 
 | Tool | Status |
@@ -276,9 +303,71 @@ opclown1/eth-ai-alphaevolve-wf-fold-8-trainer  gpu=False shape=None             
 
 `[FACT]` The CLI switch is `kaggle kernels push --accelerator ACC` ("e.g. 'NvidiaTeslaT4' for GPU T4 x2").
 
+`[FACT]` **A GPU kernel was actually requested and it sat in the queue.** A private probe was pushed with
+`--accelerator NvidiaTeslaT4`; the pushed metadata came back as
+`"enable_gpu": true, "machine_shape": "NvidiaTeslaT4"` (so the account *is* allocated a T4), but the run
+state stayed **`KernelWorkerStatus.QUEUED` for 34+ minutes** and never started inside the poll window.
+By contrast the **CPU** kernel of the same shape started and completed within ~1 minute.
+
+`[INFERENCE]` **GPU latency on Kaggle is dominated by an unpredictable queue wait, not by the run.**
+Any schedule that assumes "a GPU kernel takes N minutes" must add the queue wait as an unbounded term.
+That is also an argument for batching GPU work into fewer, larger kernels rather than one kernel per fold:
+every queued kernel pays the wait again.
+
 `[PROPOSAL]` **The one number the CLI cannot give is the CPU-kernel allowance.** It must be read by a human
 at **https://www.kaggle.com/settings/account** (the "Compute"/"Session" section) — that is the exact page,
 not a guess at a dashboard.
+
+
+### B.2b Kaggle CPU kernel — **proved end-to-end, not assumed**
+
+`[FACT]` A private scratch kernel was pushed, ran to `COMPLETE`, and its output was downloaded. This is the
+whole "train on Kaggle" loop, executed:
+
+```
+$ kaggle kernels push -p /tmp/kag_kernel_probe
+Kernel version 1 successfully pushed.
+$ kaggle kernels status opclown1/l5-env-probe-private-scratch
+has status "KernelWorkerStatus.COMPLETE"
+$ kaggle kernels output opclown1/l5-env-probe-private-scratch -p /tmp/kag_probe_out
+```
+
+The downloaded tree is **exactly the D3 contract**:
+
+```
+     2218  l5-env-probe-private-scratch.log
+      450  l5_env_probe.json
+      629  artifacts/models/BTCUSDT/20260131/meta_label_meta.json
+   690193  artifacts/models/BTCUSDT/20260131/meta_label_lgbm.txt
+```
+
+`[FACT]` **What is inside the Kaggle image** (printed by the kernel):
+
+| Package | Kaggle image | This box ($PY) |
+|---|---|---|
+| Python | **3.13.18** | 3.11.17 |
+| numpy | 2.1.3 | 2.4.6 |
+| pandas | 2.3.3 | 2.3.3 |
+| **lightgbm** | **4.6.0** | **missing** |
+| scikit-learn | 1.6.1 | missing |
+| **torch** | **2.11.0+cpu** | missing |
+| polars / duckdb / pyarrow | 1.35.2 / 1.3.2 / 23.0.1 | 2.1.0 / 2.0.1 / 26.0.0 |
+| **`nautilus_trader`** | **MISSING** | 1.221.0 |
+
+`[FACT]` **LightGBM training of n = 32,411 took 0.609 s inside the Kaggle kernel** — versus 0.63 s locally
+at 4 threads. The Kaggle image already carries the whole meta-labeling stack; **no pip install is needed
+in the kernel**.
+
+`[INFERENCE]` **`nautilus_trader` is not in the Kaggle image.** The engine therefore cannot run inside the
+kernel without a wheel install (NT needs `>=3.11,<3.14`, and the image is 3.13.18, so it *is* installable).
+But it should not be installed there: the backtest is cheap (one engine pass = 3.5–14 s measured) and it
+must be **local**, because the forward-only assertion (§D.5), the one-position-at-a-time accounting and the
+deflated-significance reporting are local obligations. **Kaggle produces the model; the box judges it.**
+
+`[FACT]` The Kaggle API from this host is **flaky**: `kaggle kernels output` failed twice with
+`SSLError(SSLEOFError(8, 'SSL: UNEXPECTED_EOF_WHILE_READING'))` and succeeded on the third attempt.
+`[PROPOSAL]` Every Kaggle call in a script must be wrapped in a retry loop (3+ attempts with a 15 s backoff);
+this is not a hypothetical — it happened twice in this leaf within five minutes.
 
 ### B.3 Kaggle upload bandwidth — the number that actually matters
 
@@ -295,7 +384,60 @@ upload_1MB wall=65.20s speed=15.7 KB/s
 → **15.7 KB/s effective for the Kaggle upload path** (the CLI's own progress bars read 11.8 → 20.6 kB/s;
 the wall-clock includes dataset creation, so the marginal rate is nearer 20 KB/s).
 
-`[FACT]` **58 MB** (the real unit of transfer) — **UPLOAD58_RESULT**
+`[FACT]` **58 MB** (the real unit of transfer) — **THE UPLOAD FAILED**:
+
+```
+Starting upload for file BTCUSDT_1m_consolidated.parquet
+  0%|          | 0.00/55.6M [00:00<?, ?B/s]
+  0%|          | 16.0k/55.6M [00:00<34:27, 28.2kB/s]
+Upload unsuccessful: BTCUSDT_1m_consolidated.parquet
+UPLOAD_58MB wall=3716.6s speed=15.3 KB/s
+```
+
+After **3,716.6 s (61.9 min)** the CLI reported **`Upload unsuccessful`**. The progress bar itself was
+healthy (28.2 kB/s, ETA 34:27) and the transfer had not completed. `[INFERENCE]` The failure is most likely
+an expired upload session or a dropped TLS stream — consistent with the `SSLEOFError` /
+`RemoteDisconnected` failures seen repeatedly against `api.kaggle.com` from this host (§B.2b).
+**A retry was started; its outcome is recorded in §B.4.**
+
+`[FACT]` **The upload is RESUMABLE, and the retry proved it.** Re-running the same command reported:
+
+```
+Already uploaded 28835839 bytes. Will resume upload at 28835840.
+  0%|          | 0.00/28.1M [00:00<?, ?B/s]
+  6%|▋         | 1.78M/28.1M [00:19<1:36:21, 4.77kB/s]
+```
+
+So the first attempt had in fact pushed **28,835,839 bytes (49.5 % of the file)** before it died, and the
+second attempt continued **from the byte offset** instead of restarting. **The second attempt also failed**,
+after 1,287.7 s, having added only ~1.9 MB — because the link was shared with a 184 MB PyTorch download and
+the rate had collapsed to **1.55 kB/s**. Two attempts, two failures, **≈30.8 MB of 58.3 MB (53 %) landed**.
+
+`[FACT]` The measured upload behaviour, summarised:
+
+| Attempt | Duration | Bytes landed | Rate | Outcome |
+|---|---|---|---|---|
+| 1 MB file | 65.2 s | 1.00 MB | **15.7 KB/s** | ✅ created |
+| 58 MB file, attempt 1 | 3,716.6 s (61.9 min) | 28.84 MB (49.5 %) | 15.3 KB/s avg | ❌ `Upload unsuccessful` |
+| 58 MB file, attempt 2 (resumed) | 1,287.7 s (21.5 min) | +1.9 MB (→ 53 %) | **1.55 KB/s** (link shared) | ❌ `Upload unsuccessful` |
+
+`[INFERENCE]` **This is the single most important operational fact in this leaf: the Kaggle upload path
+from this host is slow (15 KB/s), collapses to 1.5–2.7 KB/s under any contention, and **fails** on a
+58 MB file.** It is resumable, so no data is lost — but it is not a transport to plan around.
+
+`[PROPOSAL]` **The architecture that follows from this measurement.** Kaggle kernels have
+`enable_internet: true` and **fast egress** (the vision probe downloads the 44 MB detector from Hugging
+Face *inside* the kernel, not through this host). Therefore:
+1. **Do not push data to Kaggle from this box.** Put the data where Kaggle can fetch it quickly — the NFS
+   lake is not reachable from Kaggle, but a **Hugging Face dataset** or any public object store is, and
+   `hf_hub_download` inside the kernel is the proven pattern.
+2. **Do not upload multi-MB files as kernel *datasets* from this host** — the measured failure mode is
+   exactly that. Upload the **code** (a few KB, always works) and have the kernel pull the data.
+3. If a dataset upload is unavoidable: **chunk it**, re-run the identical command to resume, verify with
+   `kaggle datasets list`, then download and hash-compare.
+4. The model artefact coming **back** (27 MB for 39 folds) is a much better-behaved direction
+   (120–155 kB/s) than the upload — but it is still ~29 minutes, which is why §D.2 prefers one looping
+   kernel over 39 separate ones.
 
 `[FACT]` Kaggle **download** bandwidth (from `kaggle kernels output`): **120–155 kB/s** (a 26.8 MB output
 file).
@@ -317,7 +459,7 @@ this probe (`opclown1/l5-env-scratch-1mb`, `opclown1/l5-env-scratch-58mb`, both 
 
 | Transfer | Size | Wall-clock at 15.7 KB/s |
 |---|---|---|
-| BTCUSDT 1m consolidated parquet | 58.3 MB | **≈ 62 min** |
+| BTCUSDT 1m consolidated parquet | 58.3 MB | **≈ 62 min — and it FAILED** |
 | One symbol's worth of a multi-year lake (say 8 symbols × 58 MB) | 466 MB | **≈ 8.3 hours** |
 | The whole lake's crypto 1m lane (BTC+ETH+alts) | ~1 GB | **≈ 18 hours** |
 
@@ -325,19 +467,22 @@ this probe (`opclown1/l5-env-scratch-1mb`, `opclown1/l5-env-scratch-58mb`, both 
 1. The lake stays on the NFS mount (`/home/da/iflow_lake/iflow/database/`), which is the authoritative
    copy anyway and is already reachable from this host at LAN speed.
 2. Push **one Kaggle Dataset per symbol** containing only: the D2 candidate log and the feature table for
-   that symbol — Parquet, not CSV. For BTCUSDT 1m that is 260,167 labelled rows × 15 columns ≈ **5–10 MB
-   in Parquet** (≈ 30 MB as CSV). Parquet is a **3–6× smaller transfer** and the round-trip preserves the
-   column types exactly.
+   that symbol — Parquet, not CSV. **Measured** (the D2 log rebuilt from the real E-1 output: 260,167 rows
+   × 23 columns) → **8.91 MB as Parquet zstd-7** vs **13.53 MB as CSV** → **9.5 min vs 14.4 min** to upload
+   at the measured 15.7 KB/s. Parquet is the smaller transfer and preserves the column types exactly.
 3. A Kaggle **kernel** then reads the dataset directly (`/kaggle/input/<dataset>`), which avoids re-uploading
    per fold. This is the only sane shape: per-fold uploads would multiply the 11-minute cost by 39.
 4. If the lake must live on Kaggle for kernel-side rendering (the vision layer needs the price history to
    render 60-candle charts), upload only the **render window** the renderer needs, not the full history —
    or render locally (CPU, ~5–10 ms/candle) and upload only the PNGs.
 
-`[INFERENCE]` **The Parquet layout survives the round trip, but it must be verified, not assumed.**
+`[INFERENCE]` **The Parquet layout must be verified on a round trip, not assumed.**
 `kaggle datasets download` returns the uploaded bytes; the check is a hash comparison against the source
 (`sha256 = 6d9267167ff52e61558d57a748880cf1d1e1dce4b7169e51c06c24b1c5d3b1a1` for the 58 MB file) plus a
-`pyarrow.parquet.read_table` + row-count/column-type check. **ROUNDTRIP_RESULT**
+`pyarrow.parquet.read_table` + row-count/column-type check. **Not established at 58 MB** — the upload never
+completed (§B.3), so the dataset round trip could not be verified at that size. What *was* verified: the
+1 MB scratch dataset created and listed correctly; and the **kernel output** round trip (push → run →
+download → D3-shaped tree) came back byte-exactly, including a 690,193-byte `meta_label_lgbm.txt`.
 
 `[INFERENCE]` **Dataset size limit.** The CLI exposes no size field and returned no error at 58 MB.
 Kaggle's documented per-dataset ceiling is **100 GB** (public datasets are additionally subject to a
@@ -586,8 +731,8 @@ abort the run, not be logged and ignored.
 |---|---|---|---|
 | **Local, train only** (measured, §C.2) | **1.2 s** | ~15 s | **26.9 s** (56 s including I/O) |
 | **Local, train + score + backtest** | ~2 s | ~25 s | **< 2 min** (one engine pass, 14 s, is shared) |
-| **Kaggle CPU kernel, one loop** | ~1 s (+60 s boot) | — | **~2 min** + **~29 min output download** |
-| **Kaggle CPU kernel, one per fold** | ~1 s (+60 s boot) | 12 × ~1 min = 12 min | **~40–80 min** + 39 downloads |
+| **Kaggle CPU kernel, one loop** | **0.61 s measured in-kernel** (+ boot) | — | **~2 min** + **~29 min output download** |
+| **Kaggle CPU kernel, one per fold** | 0.61 s (+ boot ~40 s) | 12 × ~1 min = 12 min | **~40–80 min** + 39 downloads |
 | **Kaggle GPU kernel** | same as CPU (LightGBM does not need a GPU) | — | GPU quota cost ≈ 1.3 h for 39 folds |
 
 `[FACT]` **The binding cost in the Kaggle path is the download, not the training**: 27 MB back at
@@ -713,9 +858,9 @@ deflated numbers and say so.
 |---|---|---|---|
 | **Local CPU training (LightGBM)** | ✅ **Yes** | 1.24 s/fold at n=32,411 (1 thread); **39 folds over 3.9 y of real data = 55.6 s end-to-end** including parquet I/O and D3 artefact writes; model 687 KiB–1.0 MiB | `pip install --break-system-packages lightgbm` into `$PY` (**≈44 MB**, pulls scipy+narwhals) — `uv pip` refuses the uv-managed interpreter |
 | **Local GPU training (torch / ultralytics)** | ❌ **No** | `nvidia-smi` absent; only AMD Radeon iGPU (`03:00.0 Lucienne`); `/opt/rocm` absent; **14 GiB RAM with 12 GiB already used** | **Impossible.** CPU inference only: torch CPU 184 MB wheel + ultralytics ≈0.9 GB download; **29–145 h** for the candidate population — use Kaggle T4 instead |
-| **Kaggle CPU kernel** | ✅ **Yes** | CLI 2.2.5 authenticates (account `opclown1`); ≥100 private kernels, many `COMPLETE`; `kaggle quota` works | ~1–2 min/fold + ~29 min to pull 39 folds' artefacts back at 130 kB/s. **CPU quota is not reported by the CLI** — a human must read https://www.kaggle.com/settings/account |
+| **Kaggle CPU kernel** | ✅ **Yes — proved end-to-end** | a private kernel was pushed, ran to **`COMPLETE`**, and its output came back containing **exactly** `artifacts/models/BTCUSDT/20260131/meta_label_lgbm.txt` (690,193 B) + `meta_label_meta.json` (629 B); the image already has **lightgbm 4.6.0 / torch 2.11.0+cpu / sklearn 1.6.1 / polars / duckdb**; **LightGBM trained n=32,411 in 0.609 s in-kernel**; `nautilus_trader` is **absent** from the image | ~1–2 min/fold + ~29 min to pull 39 folds' artefacts back at 130 kB/s; wrap every API call in a **3-attempt retry** (SSL EOF happened twice). **CPU quota is not reported by the CLI** — a human must read https://www.kaggle.com/settings/account |
 | **Kaggle GPU kernel** | ✅ **Yes** | `kaggle quota` → **GPU 30.00 h total, 0.00 h used, refresh 2026-11-28**; two account kernels have `enable_gpu: true` / `machine_shape: Gpu` and status `COMPLETE`; `kaggle kernels push --accelerator NvidiaTeslaT4` | Only for the **vision** layer (41–75 GPU-h for the full candidate population → 2–3 weeks of quota, or a subset). **Do not spend GPU quota on LightGBM** — it is a 1.2 s CPU job |
-| **Kaggle Datasets hosting of the lake** | ⚠️ **Partial** | scratch datasets created OK (1 MB + 58 MB, both private); account already hosts a 115 MB dataset; **upload = 15.7 KB/s**, download = 120–155 kB/s | Push **only** the D2 candidate log + feature table per symbol as **Parquet** (5–10 MB → 11 min) in a **Dataset**, not per fold. Whole-lake push = 18 h per GB — not worth it; the NFS lake is already local |
+| **Kaggle Datasets hosting of the lake** | ❌ **No, as a transport** | a 1 MB dataset uploads fine (**15.7 KB/s**), but **two attempts to upload the 58 MB parquet FAILED** (3,716 s → 28.8 MB; resumed 1,288 s → +1.9 MB, rate collapsed to **1.55 KB/s** under contention); downloads run at 120–155 kB/s; the account already hosts a 115 MB dataset, so **size is not the limit — bandwidth is** | **Do not push data from this box.** Upload only the **code** (KBs) and let the kernel fetch data itself (`enable_internet: true`, fast egress — e.g. `hf_hub_download`). If an upload is unavoidable: chunk it, rely on the **resume** behaviour, verify with `datasets list`, hash-compare on download. The NFS lake already serves this box at LAN speed |
 | **Local rolling backtest** | ✅ **Yes** | the full 6/1/1 pipeline (39 folds, real data, D3 artefacts on disk) = **55.6 s**; one engine pass over 2,046,240 bars = 3.5–14 s | The five assertions of §D.5; the paired ΔE[R] block bootstrap; the DSR. This is where the honesty lives — it must stay local and causal |
 | **Local RL training** | ⚠️ **Probably, but gated** | torch/gymnasium/SB3 all absent; gymnasium 0.5 MB + SB3 0.2 MB + torch CPU 184 MB; state is 4–5 dims, action grid small → minutes/episode is plausible | install torch CPU + SB3; **but D4 says there is no edge to manage** — sequence this after the signal question, not before |
 
@@ -744,7 +889,8 @@ kaggle kernels list --mine; kaggle datasets list --mine; kaggle competitions lis
 kaggle kernels pull opclown1/eth-ai-alphaevolve-wf-fold-8-trainer --metadata   # enable_gpu: false
 kaggle kernels pull opclown1/kronos-ashare-finetune --metadata                 # enable_gpu: true, Gpu
 kaggle datasets create -p /tmp/kag_up        # 1 MB scratch  -> 65.2 s
-kaggle datasets create -p /tmp/kag_up58      # 58 MB scratch -> UPLOAD58_RESULT
+kaggle datasets create -p /tmp/kag_up58      # 58 MB scratch -> FAILED after 3716 s (28.8 MB landed)
+kaggle --debug datasets create -p /tmp/kag_up58   # retry -> RESUMED at 28,835,839 B, FAILED again
 # local training (throwaway venv only)
 uv venv --python 3.11 /tmp/l5venv
 uv pip install --python /tmp/l5venv/bin/python lightgbm numpy pandas pyarrow scikit-learn

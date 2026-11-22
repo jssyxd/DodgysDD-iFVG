@@ -406,3 +406,71 @@ resets the connection and can return a truncated body that breaks `json.loads`. 
 `calc_time,funding_interval_hours,last_funding_rate` (a 4-column legacy layout with `mark_price`
 also exists). The lake's existing funding partitions (DOGEUSDT/SOLUSDT/SUIUSDT) use columns
 `calc_time, funding_interval_hours, last_funding_rate, ts_utc, rate` — match that exactly.
+
+## 2026-11-22 — the E2E backtest now runs on the real data, and it confirms the D4 baseline
+`python -m dodgys_dd_quant.backtest.runner --symbol BTCUSDT --timeframe 1m --cost-profile binance
+--slippage-ticks {0,1} --inversion-window {code,doc} --regime vxn` over the governed lake's
+**2,046,240** BTCUSDT 1-minute bars:
+
+| window | ticks | candidates | trades (1 at a time) | win% | E[R] gross | E[R] net | PF | t | DSR p (32 trials) |
+|---|---|---|---|---|---|---|---|---|---|
+| `code[1,15]` | 0 | 423,770 | 42,093 | 33.6 | **+0.0087** | **−0.8190** | 1.013 | 1.26 | 0.7994 |
+| `doc[7,15]` | 1 | 366,500 | 21,540 | 33.3 | **−0.0002** | **−0.4986** | 1.000 | −0.02 | 0.9832 |
+
+Two facts worth keeping:
+1. **Cost-free expectancy is ~0.** The 1:2 break-even win rate is exactly 33.3 %, and the measured
+   win rate is 33.3–33.6 %. The rule engine is a *coin flip*, not a near-miss. Every CI includes zero
+   and the deflated-Sharpe p-value over 32 tried arms is 0.80–0.98.
+2. **The cost is 0.50–0.83 R per trade** — the FVG stop is so tight (≈0.1 % of price) that Binance's
+   8 bp round trip is most of the risk unit. The break-even cost is **0.009 R**; the actual cost is
+   **~80× larger**. Any variant would have to be ~80× better than the rule engine to clear costs.
+   This is a *structural* finding about the strategy's stop geometry, not a parameter choice.
+
+## 2026-11-22 — the published replica may create NO candidates on Pine v5/v6
+Leaf M2 found that the reference replica's swing detection uses `ta.lowestbars(3) == -1` /
+`ta.highestbars(3) == -1`. In **Pine v5/v6 `ta.lowestbars` returns the offset of the lowest value
+*within* the window** (0..n-1), never −1; the −1 convention belongs to **v4**. So on v5/v6 that
+predicate is false for any non-na series — i.e. the published `//@version=6` script would detect
+**no swings and therefore no candidates at all**. Our implementation follows the **intended v4
+semantics** and labels the arm accordingly (`--preset pine`). Any A/B against the replica must
+account for this: the replica is not a numerically reproducible reference on v6.
+
+## 2026-11-22 — the R1 review's verdict and what was fixed
+`research/audit/R1_REVIEW.md` (leaf R1, a different model from the authors) returned
+**CONDITIONAL FAIL** with 12 findings. Fixed in the captain's integration pass:
+- **F1 (high)** the forward-only guard was vacuous: the runner scored *every* fold with
+  `folds[-1]`'s model, and the guard compared against the *fold's* asof rather than the
+  *artefact's*. Now each fold builds its own scorer from its own directory, and a fold whose
+  asof lies outside its own test window is **rejected loudly** (`ForwardOnlyViolation`).
+- **F2 (high)** the D3 producer and consumer could not interoperate — the index was written where
+  the reader did not look, the entries used `model_dir`, and the folder lacked the `asof_` prefix.
+  The reader now probes six layouts; the producer's `model_dir` key is honoured.
+- **F3 (high)** the model path could not predict: `predict(lgb.Dataset(...))` raises on LightGBM >= 4
+  (now a raw numpy vector) and the scorer was handed a `Candidate` where a feature dict is required
+  (now built from `ml_pipeline.features.build_features`).
+- **F4 (high)** the "rule-only baseline" was the *gated* portfolio, so the model was compared with
+  itself. The baseline is now an **independent** population: 21,539 rule-only trades vs 652 gated.
+- **F5 (medium)** D2's `minutes_from_us_open` was minutes since **midnight**, not since 09:30 ET
+  (every row wrong). Now signed minutes from the 09:30 ET open (`US_OPEN_MINUTES = 570`).
+- **F9 (low)** `LAKE_ROOTS` never expanded `~`, so the authoritative NFS lake was never used.
+- **F3 note**: 77,929 candidates share a `ts_event`; the feature lookup is keyed by `ts_event`
+  alone, so colliding candidates would be scored with each other's features — still open.
+
+**The reviewer's own E2E numbers reproduced E-1 exactly** (e1/defer arm: n=15,928 vs 15,929,
+E[R] = −0.0197, t = −1.76, CI [−0.042, +0.002]), which is a strong independent check that the
+rule engine matches the falsification harness.
+
+## 2026-11-22 — the full ML -> backtest path, executed end to end
+`train_meta_labeler` over the real D2 candidate log (366,500 rows) produced **39 walk-forward
+folds** (each ~44–52 k train / 6–9 k test candidates) and D3 artefacts; the backtest then applied
+**each fold's own model**:
+- **`auc_test` is 0.483–0.521 across all 39 folds** — the meta-labeler has **no predictive power**.
+- The `P(Win) >= 0.58` gate passes **0 candidates in most folds** (the base rate is ~0.34), so the
+  gated portfolio is only **652 trades** out of 366,500.
+- Gated vs independent rule-only baseline: gross E[R] **+0.0675 vs −0.0002**, PF 1.105 vs 1.000,
+  t = 1.20, CI [−0.043, +0.178] (**includes zero**), and **E_net = −0.5245 R** after costs.
+- DSR p = 0.8198 over 32 tried arms.
+**Conclusion: the ML layer does not and cannot rescue a zero-edge signal** — exactly L1's
+arithmetic (a filter needs to remove a sub-population winning 9.7 % against a 32.7 % base) and
+L4's "necessary condition". The binding constraint is the rule layer and the cost model, not the
+model.

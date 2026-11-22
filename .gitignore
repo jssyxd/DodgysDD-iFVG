@@ -15,6 +15,7 @@ artifacts/
 research/candidates/
 *.parquet
 *.zip
+.venv-ml/
 
 # ---- agent runtime state ----
 .pi/
@@ -22,11 +23,8 @@ research/candidates/
 __pycache__/
 *.pyc
 
-# ---- CI workflow parked ----
-# The project's GitHub token carries only the `repo` scope. GitHub refuses to
-# accept a file under .github/workflows/ from such a token (both git push and
-# the Contents API), so ci.yml is kept locally and pushed once a token with the
-# `workflow` scope is available, or uploaded manually via the GitHub web UI.
-# The equivalent protection runs locally: scripts/pre-commit-secret-scan.sh
-# (pre-commit) and scripts/pre-push-secret-scan.sh (pre-push).
+# ---- CI workflow ----
+# The project token carries only the `repo` scope. GitHub refuses both a git
+# push and a REST tree entry for files under .github/workflows/ without the
+# `workflow` scope, so ci.yml is kept locally until such a token exists.
 .github/workflows/ci.yml
