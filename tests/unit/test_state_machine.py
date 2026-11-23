@@ -478,3 +478,49 @@ def test_the_centred_window_would_have_peaked():
     assert known == 5
     # a centred window would have known it at bar 3
     assert known > 3
+
+
+# ---------------------------------------------------------------------------
+# The leg tracker and the BE-intact gate
+# ---------------------------------------------------------------------------
+
+
+def test_the_leg_tracker_produces_candidates():
+    """The leg tracker must actually find setups.
+
+    Its pivots used to be a 3-bar rolling minimum, which fires on roughly a
+    third of all bars: the live gap was then discarded long before it could
+    reach the 7-bar minimum inversion age, and the reference-faithful arm
+    collapsed to a single trade over ten years of NQ.
+    """
+    bars = _random_bars(3000, seed=5)
+    log = run_state_machine(bars, PRESETS["pine_leg"])
+    assert len(log.candidates) > 50, (
+        f"the leg tracker produced only {len(log.candidates)} candidates"
+    )
+
+
+def test_the_be_intact_gate_removes_candidates():
+    """The gate is a real filter, not dead configuration."""
+    bars = _random_bars(3000, seed=5)
+    without = run_state_machine(bars, PRESETS["pine_be"])
+    with_gate = run_state_machine(bars, PRESETS["pine"])
+    assert len(with_gate.candidates) <= len(without.candidates)
+
+
+def test_an_intact_origin_keeps_the_candidate():
+    """A candidate whose origin was never taken out must survive the gate."""
+    bars = _random_bars(3000, seed=5)
+    log = run_state_machine(bars, PRESETS["pine"])
+    for cand in log.candidates:
+        ob = cand.origin_bar
+        if ob < 0 or cand.confirm_bar < ob:
+            continue
+        if cand.side < 0:
+            taken = float(bars.high[ob : cand.confirm_bar + 1].max()) > cand.origin_price
+        else:
+            taken = float(bars.low[ob : cand.confirm_bar + 1].min()) < cand.origin_price
+        assert not taken, (
+            f"candidate at bar {cand.confirm_bar} kept although its origin "
+            f"({ob}, {cand.origin_price}) was already taken out"
+        )

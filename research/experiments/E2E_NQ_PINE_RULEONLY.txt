@@ -1,0 +1,4 @@
+PORTFOLIO (1 at a time, drop)    n=25083   win%= 34.4  E[R]=  0.0317  E_net= -0.0700  PF= 1.048  t=  3.52  CI95=[0.014,0.049]
+BASELINE  (rule-only, drop)      n=25083   win%= 34.4  E[R]=  0.0317  E_net= -0.0700  PF= 1.048  t=  3.52  CI95=[0.014,0.049]
+candidates=51391  approved=51391  trades=25083
+Sharpe (per trade) = 0.0222   deflated Sharpe = 0.9240   DSR p-value = 0.0760   trials = 32

@@ -1,0 +1,62 @@
+===== preset=e1 slippage=0 =====
+PORTFOLIO (1 at a time, drop)    n=45734   win%= 32.9  E[R]= -0.0127  E_net= -0.0980  PF= 0.981  t= -1.93  CI95=[-0.026,0.000]
+BASELINE  (rule-only, drop)      n=45734   win%= 32.9  E[R]= -0.0127  E_net= -0.0980  PF= 0.981  t= -1.93  CI95=[-0.026,0.000]
+candidates=430565  approved=430565  trades=45735
+Sharpe (per trade) = -0.0090   deflated Sharpe = 0.0000   DSR p-value = 1.0000   trials = 32
+===== preset=e1 slippage=1 =====
+PORTFOLIO (1 at a time, drop)    n=45734   win%= 32.9  E[R]= -0.0127  E_net= -0.1430  PF= 0.981  t= -1.93  CI95=[-0.026,0.000]
+BASELINE  (rule-only, drop)      n=45734   win%= 32.9  E[R]= -0.0127  E_net= -0.1430  PF= 0.981  t= -1.93  CI95=[-0.026,0.000]
+candidates=430565  approved=430565  trades=45735
+Sharpe (per trade) = -0.0090   deflated Sharpe = 0.0000   DSR p-value = 1.0000   trials = 32
+===== preset=e1 slippage=2 =====
+PORTFOLIO (1 at a time, drop)    n=45734   win%= 32.9  E[R]= -0.0127  E_net= -0.1879  PF= 0.981  t= -1.93  CI95=[-0.026,0.000]
+BASELINE  (rule-only, drop)      n=45734   win%= 32.9  E[R]= -0.0127  E_net= -0.1879  PF= 0.981  t= -1.93  CI95=[-0.026,0.000]
+candidates=430565  approved=430565  trades=45735
+Sharpe (per trade) = -0.0090   deflated Sharpe = 0.0000   DSR p-value = 1.0000   trials = 32
+===== preset=honest slippage=0 =====
+PORTFOLIO (1 at a time, drop)    n=45734   win%= 32.9  E[R]= -0.0127  E_net= -0.0984  PF= 0.981  t= -1.93  CI95=[-0.026,0.000]
+BASELINE  (rule-only, drop)      n=45734   win%= 32.9  E[R]= -0.0127  E_net= -0.0984  PF= 0.981  t= -1.93  CI95=[-0.026,0.000]
+candidates=430452  approved=430452  trades=45735
+Sharpe (per trade) = -0.0090   deflated Sharpe = 0.0000   DSR p-value = 1.0000   trials = 32
+===== preset=honest slippage=1 =====
+PORTFOLIO (1 at a time, drop)    n=45734   win%= 32.9  E[R]= -0.0127  E_net= -0.1436  PF= 0.981  t= -1.93  CI95=[-0.026,0.000]
+BASELINE  (rule-only, drop)      n=45734   win%= 32.9  E[R]= -0.0127  E_net= -0.1436  PF= 0.981  t= -1.93  CI95=[-0.026,0.000]
+candidates=430452  approved=430452  trades=45735
+Sharpe (per trade) = -0.0090   deflated Sharpe = 0.0000   DSR p-value = 1.0000   trials = 32
+===== preset=honest slippage=2 =====
+PORTFOLIO (1 at a time, drop)    n=45734   win%= 32.9  E[R]= -0.0127  E_net= -0.1887  PF= 0.981  t= -1.93  CI95=[-0.026,0.000]
+BASELINE  (rule-only, drop)      n=45734   win%= 32.9  E[R]= -0.0127  E_net= -0.1887  PF= 0.981  t= -1.93  CI95=[-0.026,0.000]
+candidates=430452  approved=430452  trades=45735
+Sharpe (per trade) = -0.0090   deflated Sharpe = 0.0000   DSR p-value = 1.0000   trials = 32
+===== preset=doc slippage=0 =====
+PORTFOLIO (1 at a time, drop)    n=7399    win%= 34.1  E[R]=  0.0242  E_net= -0.0586  PF= 1.037  t=  1.46  CI95=[-0.008,0.057]
+BASELINE  (rule-only, drop)      n=7399    win%= 34.1  E[R]=  0.0242  E_net= -0.0586  PF= 1.037  t=  1.46  CI95=[-0.008,0.057]
+candidates=12131  approved=12131  trades=7399
+Sharpe (per trade) = 0.0170   deflated Sharpe = 0.2608   DSR p-value = 0.7392   trials = 32
+===== preset=doc slippage=1 =====
+PORTFOLIO (1 at a time, drop)    n=7399    win%= 34.1  E[R]=  0.0242  E_net= -0.1021  PF= 1.037  t=  1.46  CI95=[-0.008,0.057]
+BASELINE  (rule-only, drop)      n=7399    win%= 34.1  E[R]=  0.0242  E_net= -0.1021  PF= 1.037  t=  1.46  CI95=[-0.008,0.057]
+candidates=12131  approved=12131  trades=7399
+Sharpe (per trade) = 0.0170   deflated Sharpe = 0.2608   DSR p-value = 0.7392   trials = 32
+===== preset=doc slippage=2 =====
+PORTFOLIO (1 at a time, drop)    n=7399    win%= 34.1  E[R]=  0.0242  E_net= -0.1457  PF= 1.037  t=  1.46  CI95=[-0.008,0.057]
+BASELINE  (rule-only, drop)      n=7399    win%= 34.1  E[R]=  0.0242  E_net= -0.1457  PF= 1.037  t=  1.46  CI95=[-0.008,0.057]
+candidates=12131  approved=12131  trades=7399
+Sharpe (per trade) = 0.0170   deflated Sharpe = 0.2608   DSR p-value = 0.7392   trials = 32
+
+===== preset=pine slippage=0 =====
+PORTFOLIO (1 at a time, drop)    n=25083   win%= 34.4  E[R]=  0.0317  E_net= -0.0349  PF= 1.048  t=  3.52  CI95=[0.014,0.049]
+BASELINE  (rule-only, drop)      n=25083   win%= 34.4  E[R]=  0.0317  E_net= -0.0349  PF= 1.048  t=  3.52  CI95=[0.014,0.049]
+candidates=51391  approved=51391  trades=25083
+Sharpe (per trade) = 0.0222   deflated Sharpe = 0.9240   DSR p-value = 0.0760   trials = 32
+===== preset=pine slippage=1 =====
+PORTFOLIO (1 at a time, drop)    n=25083   win%= 34.4  E[R]=  0.0317  E_net= -0.0700  PF= 1.048  t=  3.52  CI95=[0.014,0.049]
+BASELINE  (rule-only, drop)      n=25083   win%= 34.4  E[R]=  0.0317  E_net= -0.0700  PF= 1.048  t=  3.52  CI95=[0.014,0.049]
+candidates=51391  approved=51391  trades=25083
+Sharpe (per trade) = 0.0222   deflated Sharpe = 0.9240   DSR p-value = 0.0760   trials = 32
+===== preset=pine slippage=2 =====
+PORTFOLIO (1 at a time, drop)    n=25083   win%= 34.4  E[R]=  0.0317  E_net= -0.1051  PF= 1.048  t=  3.52  CI95=[0.014,0.049]
+BASELINE  (rule-only, drop)      n=25083   win%= 34.4  E[R]=  0.0317  E_net= -0.1051  PF= 1.048  t=  3.52  CI95=[0.014,0.049]
+candidates=51391  approved=51391  trades=25083
+Sharpe (per trade) = 0.0222   deflated Sharpe = 0.9240   DSR p-value = 0.0760   trials = 32
+PINE MATRIX DONE

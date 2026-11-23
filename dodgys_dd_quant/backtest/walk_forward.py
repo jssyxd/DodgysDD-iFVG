@@ -278,18 +278,34 @@ class ModelScorer:
 
     def score(self, features: dict[str, float]) -> float:
         """P(Win) for one candidate."""
+        return self.score_many([features])[0]
+
+    def score_many(self, features: Sequence[dict[str, float]]) -> list[float]:
+        """P(Win) for a batch of candidates.
+
+        Scoring one row per call is what made the ten-year NQ walk-forward
+        take minutes per fold: LightGBM's per-call overhead dominates when the
+        matrix has a single row.  One call for the whole fold gives the same
+        numbers (LightGBM predicts each row independently) and is orders of
+        magnitude faster.
+        """
         if self.model is None:
             raise RuntimeError(f"model unavailable: {self.error}")
-        if not isinstance(features, dict):
-            raise TypeError(
-                "the scorer needs a feature dict (the model scores a feature "
-                f"vector), got {type(features).__name__}; wire feature_fn "
-                "through ml_pipeline.features.build_features")
+        if not features:
+            return []
         import numpy as np
 
-        row = [float(features.get(name, 0.0)) for name in self.feature_list]
-        # LightGBM >= 4 refuses a Dataset for prediction; pass the raw vector.
-        return float(self.model.predict(np.asarray([row], dtype="float64"))[0])
+        matrix = np.empty((len(features), len(self.feature_list)), dtype="float64")
+        for i, row in enumerate(features):
+            if not isinstance(row, dict):
+                raise TypeError(
+                    "the scorer needs a feature dict (the model scores a feature "
+                    f"vector), got {type(row).__name__}; wire feature_fn "
+                    "through ml_pipeline.features.build_features")
+            for j, name in enumerate(self.feature_list):
+                matrix[i, j] = float(row.get(name, 0.0))
+        # LightGBM >= 4 refuses a Dataset for prediction; pass the raw matrix.
+        return [float(v) for v in self.model.predict(matrix)]
 
 
 # ---------------------------------------------------------------------------
@@ -603,8 +619,15 @@ def walk_forward(
             mode = "model"
             for cand in in_window:
                 assert_forward_only(fold, cand.ts_event)
-                feats = feature_fn(cand) if feature_fn is not None else None
-                p = fold_scorer.score(feats) if feats is not None else fold_scorer.score(cand)
+            rows = [
+                feature_fn(cand) if feature_fn is not None else cand
+                for cand in in_window
+            ]
+            if hasattr(fold_scorer, "score_many"):
+                probs = fold_scorer.score_many(rows)
+            else:
+                probs = [fold_scorer.score(row) for row in rows]
+            for cand, p in zip(in_window, probs):
                 cand.p_win = p
                 p_wins.append(p)
                 if p >= threshold:

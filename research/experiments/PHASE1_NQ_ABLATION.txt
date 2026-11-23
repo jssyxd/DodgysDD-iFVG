@@ -1,0 +1,7 @@
+===== preset=pine_leg slippage=1 =====
+PORTFOLIO (1 at a time, drop)    n=25228   win%= 34.3  E[R]=  0.0303  E_net= -0.0714  PF= 1.046  t=  3.38  CI95=[0.013,0.048]
+candidates=51883  approved=51883  trades=25228
+===== preset=pine_be slippage=1 =====
+PORTFOLIO (1 at a time, drop)    n=45268   win%= 32.9  E[R]= -0.0135  E_net= -0.1450  PF= 0.980  t= -2.03  CI95=[-0.026,-0.000]
+candidates=416547  approved=416547  trades=45269
+ABLATION DONE

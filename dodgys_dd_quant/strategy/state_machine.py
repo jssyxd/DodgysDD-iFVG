@@ -230,6 +230,26 @@ PRESETS: dict[str, RuleConfig] = {
         require_sweep=True,
         killzone_gate=True,
     ),
+    # Ablations of the reference-faithful arm: each keeps one of its two
+    # reference features so the contribution of each can be measured.
+    "pine_leg": RuleConfig(
+        min_gap_atr_mult=None,
+        stop_window="confirm",
+        entry_fill="next_open",
+        portfolio_mode="drop",
+        require_sweep=False,
+        leg_tracker=True,
+        require_be_intact=False,
+    ),
+    "pine_be": RuleConfig(
+        min_gap_atr_mult=None,
+        stop_window="confirm",
+        entry_fill="next_open",
+        portfolio_mode="drop",
+        require_sweep=False,
+        leg_tracker=False,
+        require_be_intact=True,
+    ),
 }
 
 
@@ -435,7 +455,7 @@ def run_state_machine(
         sweep_flags[ev.bar] = True
 
     if config.leg_tracker:
-        confirmations = _leg_confirmations(bars, fvgs, config, sweep_flags)
+        confirmations = _leg_confirmations(bars, fvgs, config, sweep_flags, pivots)
     else:
         gate = _bar_gates(config, minutes, sweep_flags)
         confirmations = _scan_confirmations(bars, fvgs, config, gate)
@@ -526,11 +546,37 @@ def _scan_confirmations(
     return out
 
 
+def _pivot_track(
+    idx: np.ndarray, known: np.ndarray, price_src: np.ndarray, n: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The causal swing pivot of one direction, in force at every bar.
+
+    Returns ``(origin_bar, origin_price, is_new)``: the bar index and price of
+    the most recent pivot that was already *knowable* at each bar, and a flag
+    that marks the bar on which a new pivot became known.
+
+    A pivot at bar ``p`` is only knowable at bar ``p + SWING_RIGHT_BARS`` (see
+    :func:`causal_pivots`), so the track never looks ahead.
+    """
+    origin_bar = np.full(n, -1, dtype=np.int64)
+    origin_price = np.full(n, np.nan, dtype=np.float64)
+    is_new = np.zeros(n, dtype=bool)
+    if idx.shape[0]:
+        pos = np.searchsorted(known, np.arange(n), side="right") - 1
+        ok = pos >= 0
+        origin_bar[ok] = idx[pos[ok]]
+        origin_price[ok] = price_src[idx[pos[ok]]]
+        conf = known[known < n]
+        is_new[conf] = True
+    return origin_bar, origin_price, is_new
+
+
 def _leg_confirmations(
     bars: Bars,
     fvgs,
     config: RuleConfig,
     sweep_flags: np.ndarray,
+    pivots: PivotLevels,
 ) -> list[_Confirmation]:
     """The reference's leg tracker (R1-R5): one live candidate per direction.
 
@@ -542,11 +588,25 @@ def _leg_confirmations(
     markedly slower than the vectorised scanner.  The reference's ``Series``
     mode (merging consecutive gaps into one growing zone) is **not**
     implemented; only ``Single`` is supported.
+
+    The leg boundaries are the module's own **fractal** pivots
+    (:func:`causal_pivots`), the same definition the origin tracker uses.  An
+    earlier revision used a 3-bar rolling minimum as the "pivot", which fires
+    on roughly a third of all bars: the live gap was then discarded long
+    before it could reach the 7-bar minimum inversion age, and the whole
+    reference-faithful arm collapsed to a single trade over ten years.
     """
     n = len(bars)
     high_l = bars.high.tolist()
     low_l = bars.low.tolist()
     close_l = bars.close.tolist()
+
+    low_bar, low_price, low_new = _pivot_track(
+        pivots.low_idx, pivots.low_known, bars.low, n
+    )
+    high_bar, high_price, high_new = _pivot_track(
+        pivots.high_idx, pivots.high_known, bars.high, n
+    )
 
     # at most one gap per bar (the geometry is strict and mutually exclusive)
     fvg_at = np.full(n, -1, dtype=np.int64)
@@ -561,6 +621,16 @@ def _leg_confirmations(
     max_age = max(min_age, config.inversion_max_bars)
 
     for fvg_type in (1, -1):
+        # the leg's origin is the swing pivot of the same sense as the gap:
+        # a bullish gap starts at a swing low, a bearish gap at a swing high.
+        # The opposing pivot freezes the leg until its price is taken out.
+        if fvg_type > 0:
+            orig_bar_arr, orig_price_arr, orig_new = low_bar, low_price, low_new
+            opp_price_arr, opp_new = high_price, high_new
+        else:
+            orig_bar_arr, orig_price_arr, orig_new = high_bar, high_price, high_new
+            opp_price_arr, opp_new = low_price, low_new
+
         origin_bar = -1
         origin_price = math.nan
         frozen = False
@@ -574,18 +644,11 @@ def _leg_confirmations(
             a = k - 3
 
             # --- the leg's own pivot resets the state -----------------------
-            # the pivot fires when bar k is the extreme of the last 3 bars
-            window_low = min(low_l[k - 2], low_l[k - 1], low_l[k])
-            window_high = max(high_l[k - 2], high_l[k - 1], high_l[k])
-            pivot_origin = fvg_type > 0 and low_l[k] <= window_low
-            pivot_opp = fvg_type > 0 and high_l[k] >= window_high
-            if fvg_type < 0:
-                pivot_origin = high_l[k] >= window_high
-                pivot_opp = low_l[k] <= window_low
-
-            if pivot_origin:
-                origin_bar = k
-                origin_price = low_l[k] if fvg_type > 0 else high_l[k]
+            # the pivot fires when a *fractal* swing pivot of the origin sense
+            # becomes knowable (bar p + SWING_RIGHT_BARS)
+            if orig_new[k]:
+                origin_bar = int(orig_bar_arr[k])
+                origin_price = float(orig_price_arr[k])
                 frozen = False
                 frozen_price = math.nan
                 freeze_bar = -1
@@ -640,9 +703,9 @@ def _leg_confirmations(
                             confirmed = True
                             out.append(_Confirmation(fvg_index=int(live), confirm_bar=c))
 
-            if not frozen and pivot_opp:
+            if not frozen and opp_new[k]:
                 frozen = True
-                frozen_price = high_l[k - 1] if fvg_type > 0 else low_l[k - 1]
+                frozen_price = float(opp_price_arr[k])
                 freeze_bar = k
 
     out.sort(key=lambda x: x.confirm_bar)
@@ -805,6 +868,23 @@ def _build_candidates(
         target = entry_price + side * config.rr * risk
 
         origin_bar_arr, origin_price_arr = origins[side]
+
+        # --- the BE-intact gate -------------------------------------------
+        # The reference only takes a setup when the swing the leg started from
+        # is still intact: if price already traded through the origin level
+        # between the origin and the confirmation, the break-even level the
+        # reference would move the stop to no longer exists.
+        if config.require_be_intact:
+            ob = int(origin_bar_arr[confirm_bar])
+            op = float(origin_price_arr[confirm_bar])
+            if ob >= 0 and not math.isnan(op):
+                if side < 0:
+                    taken = float(bars.high[ob : confirm_bar + 1].max()) > op
+                else:
+                    taken = float(bars.low[ob : confirm_bar + 1].min()) < op
+                if taken:
+                    continue
+
         out.append(
             Candidate(
                 ts_event=int(bars.ts[confirm_bar]) + interval,
@@ -1017,14 +1097,27 @@ def _attach_smt(
         if cand.side > 0:
             traded_new = float(bars.low[leg_start : i + 1].min())
             traded_old = float(bars.low[pre_start:leg_start].min())
-            ref_new = float(np.nanmin(ref_low[leg_start : i + 1]))
-            ref_old = float(np.nanmin(ref_low[pre_start:leg_start]))
+            ref_new_seg = ref_low[leg_start : i + 1]
+            ref_old_seg = ref_low[pre_start:leg_start]
+            if not np.isfinite(ref_new_seg).any() or not np.isfinite(ref_old_seg).any():
+                # the reference instrument does not cover this window: the
+                # divergence is UNKNOWN, not absent (the ES panel starts in
+                # 2020-11 while NQ starts in 2015).
+                cand.smt_divergence = -1
+                continue
+            ref_new = float(np.nanmin(ref_new_seg))
+            ref_old = float(np.nanmin(ref_old_seg))
             divergence = traded_new < traded_old and not (ref_new < ref_old)
         else:
             traded_new = float(bars.high[leg_start : i + 1].max())
             traded_old = float(bars.high[pre_start:leg_start].max())
-            ref_new = float(np.nanmax(ref_high[leg_start : i + 1]))
-            ref_old = float(np.nanmax(ref_high[pre_start:leg_start]))
+            ref_new_seg = ref_high[leg_start : i + 1]
+            ref_old_seg = ref_high[pre_start:leg_start]
+            if not np.isfinite(ref_new_seg).any() or not np.isfinite(ref_old_seg).any():
+                cand.smt_divergence = -1
+                continue
+            ref_new = float(np.nanmax(ref_new_seg))
+            ref_old = float(np.nanmax(ref_old_seg))
             divergence = traded_new > traded_old and not (ref_new > ref_old)
         cand.smt_divergence = 1 if divergence else 0
         cand.checklist_flags["smt_divergence"] = bool(divergence)
