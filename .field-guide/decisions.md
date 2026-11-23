@@ -52,3 +52,31 @@ the scoring phase. `ModelScorer.score_many()` now builds the fold's matrix
 once and predicts in a single call; the same run takes **four minutes**.
 `score()` is kept and `walk_forward` falls back to it for any scorer that does
 not implement the batch API, so custom scorers keep working.
+
+## 2026-11-24 — the vision layer works; VISION_AUDIT's central claim was wrong
+`research/analysis/VISION_AUDIT.md` declared the design doc's `IoU > 0.75` gate **unreachable
+by construction**, because the detector's boxes were *assumed* to wrap the third candle's body
+(which is disjoint from the FVG gap). That premise was **inferred statically from the
+checkpoint** — the audit explicitly ran no inference.
+
+Running `ibtsam/nq-fvg-detector` over renders of the real NQ bars (30 windows, 348 boxes):
+- **336 / 348 = 96.6 %** of the boxes land on a rule-engine FVG's **middle bar**;
+- the class matches the gap's own direction in **96.1 %**;
+- the **1-D vertical IoU against the gap interval has a median of 0.9518**, and **94.9 %** of
+  the matched boxes clear the doc's 0.75 gate;
+- the IoU against the third candle's *body* is indeed ~0 (median 0.0000) — the body's
+  disjointness is real, but the boxes are **not** the body: the detector wraps the **gap**.
+
+**The lesson:** the detector is named `nq-fvg-detector` and its classes are
+`bullish_fvg`/`bearish_fvg`. A claim of the form "the model cannot achieve X" must be
+**measured**, never inferred from a checkpoint's static structure.
+
+## 2026-11-24 — the vision stack lives in its own venv
+The uv-managed 3.11 interpreter is **externally managed** (PEP 668): `pip install` into it is
+refused, and `--break-system-packages` would risk the runtime env that owns nautilus_trader.
+So the vision layer gets its own env, `.venv-vision/` (uv venv --python 3.11), with
+`torch`/`torchvision` (CPU wheels), `ultralytics`, `mplfinance`, `opencv-python`, `huggingface_hub`.
+The runtime env stays clean; the layer's pure-python parts (the price→pixel transform, the IoU)
+import without torch so they can be used from the runtime interpreter.
+**There is no GPU on this host** (`nvidia-smi` is absent), so detection runs at **0.45 s per
+candidate** on CPU — fine for a filtered subset, hopeless for the full 430 k census.

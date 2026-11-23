@@ -1,0 +1,21 @@
+===== year 2021 =====
+PORTFOLIO (1 at a time, drop)    n=398     win%= 36.4  E[R]=  0.0930  E_net=  0.0373  PF= 1.146  t=  1.28  CI95=[-0.049,0.235]
+                                 mean cost=0.0557 R   break-even cost=0.0930 R   PF_net=1.056   total R=37.00   max consec losses=8
+                                 mean cost=0.0557 R   break-even cost=0.0930 R   PF_net=1.056   total R=37.00   max consec losses=8
+===== year 2022 =====
+PORTFOLIO (1 at a time, drop)    n=195     win%= 32.8  E[R]= -0.0154  E_net= -0.0537  PF= 0.977  t= -0.15  CI95=[-0.214,0.183]
+                                 mean cost=0.0383 R   break-even cost=-0.0154 R   PF_net=0.923   total R=-3.00   max consec losses=9
+                                 mean cost=0.0383 R   break-even cost=-0.0154 R   PF_net=0.923   total R=-3.00   max consec losses=9
+===== year 2023 =====
+PORTFOLIO (1 at a time, drop)    n=327     win%= 35.8  E[R]=  0.0734  E_net=  0.0242  PF= 1.114  t=  0.92  CI95=[-0.083,0.230]
+                                 mean cost=0.0492 R   break-even cost=0.0734 R   PF_net=1.036   total R=24.00   max consec losses=12
+                                 mean cost=0.0492 R   break-even cost=0.0734 R   PF_net=1.036   total R=24.00   max consec losses=12
+===== year 2024 =====
+PORTFOLIO (1 at a time, drop)    n=295     win%= 39.0  E[R]=  0.1695  E_net=  0.1324  PF= 1.278  t=  1.99  CI95=[0.002,0.337]
+                                 mean cost=0.0371 R   break-even cost=0.1695 R   PF_net=1.210   total R=50.00   max consec losses=12
+                                 mean cost=0.0371 R   break-even cost=0.1695 R   PF_net=1.210   total R=50.00   max consec losses=12
+===== year 2025 =====
+PORTFOLIO (1 at a time, drop)    n=277     win%= 37.5  E[R]=  0.1264  E_net=  0.0935  PF= 1.202  t=  1.44  CI95=[-0.045,0.298]
+                                 mean cost=0.0329 R   break-even cost=0.1264 R   PF_net=1.145   total R=35.00   max consec losses=11
+                                 mean cost=0.0329 R   break-even cost=0.1264 R   PF_net=1.145   total R=35.00   max consec losses=11
+YEARLY DONE

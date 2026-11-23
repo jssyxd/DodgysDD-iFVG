@@ -47,7 +47,7 @@ Module → file mapping (from `diagram-目录结构规划.svg`; package root is 
 | # | File | Responsibility | Status |
 |---|---|---|---|
 | 1 | `dodgys_dd_quant/data_pipeline/prepare_parquet.py` | Databento DBN → `ParquetDataCatalog` bars; VXN clean + regime alignment | not built — the lake path (`scripts/ingest_futures_1m.py`) is used instead |
-| 2 | `dodgys_dd_quant/vision_validator/visual_cv.py` | Render 60 indicator-free candles → detector → IoU vs rule FVG box | not built |
+| 2 | `dodgys_dd_quant/vision_validator/visual_cv.py` | Render 90 indicator-free candles → detector → IoU vs the rule FVG | **built** |
 | 3 | `dodgys_dd_quant/strategy/custom_data.py` | `VXNRegimeData` and vision-signal `Data` objects on the engine timeline | not built |
 | 4 | `dodgys_dd_quant/strategy/state_machine.py` | Faithful DodgysDD rule state machine | **built** |
 | 5 | `dodgys_dd_quant/strategy/dodgys_strategy.py` | NautilusTrader `Strategy`: multi-instrument subscription, filters, execution, log export | not built — the backtest harness (`dodgys_dd_quant/backtest/`) drives the engine instead |
@@ -134,6 +134,17 @@ These are measured, not opinions:
 11. **The upstream author's own replica concludes the strategy has no value** — see the README in
     `research/github/IFVG-Ultimate-Dodgy/`. Treat a negative phase-1 result as a likely outcome to be
     measured, not an impossibility.
+12. **The edge is in the entry, not the payoff.** The RR sweep (1:1 → 1:4) moves gross E[R] inside a
+    band of 0.008 R; the NY killzone moves it by **+0.049 R** and the checklist by **+0.015 R**;
+    widening the stop *destroys* it (−0.068 R at 3×). The reference's 1:2 target was never the problem.
+13. **The doc's `IoU > 0.75` vision gate IS reachable.** `VISION_AUDIT.md` asserted the opposite from
+    a *static* reading of the checkpoint, without ever running the model. Measured: **336/348**
+    detector boxes land on a rule-engine FVG's middle bar (96.6 %), the class matches the gap's
+    direction in 96.1 %, and the vertical IoU against the **gap interval** has a median of **0.9518**
+    with 94.9 % above 0.75. The boxes wrap the **gap**, not the third candle's body. **Never infer
+    what a model does — measure it.**
+14. **The detector's *confidence* is a real filter** (win% 35.2 vs 30.7, E[R] +0.055 vs −0.079,
+    two-proportion z = **+2.26**); the IoU itself is uninformative (corr +0.002 with the outcome).
 
 ## Data Lanes — what actually exists (measured 2026-11-23)
 
@@ -277,13 +288,30 @@ $PY -c "import nautilus_trader; print(nautilus_trader.__version__)"
 
 The **two interpreters** are a hard split: the 3.11 runtime env runs the rule engine and the
 backtest; `.venv-ml` runs the feature builder and the meta-labeler, because LightGBM needs a build
-the runtime env does not have. Never install LightGBM into the runtime env.
+the runtime env does not have. Never install LightGBM into the runtime env. The **vision layer has a
+third env**, `.venv-vision/` (torch + ultralytics), because the uv runtime interpreter is
+**externally managed** (PEP 668) and must not be modified.
 
 ```bash
 # the rule engine, rule-only, one position at a time
 $PY -m dodgys_dd_quant.backtest.runner --symbol NQ --timeframe 1m --preset pine \
     --cost-profile nq --slippage-ticks 1 --inversion-window doc --regime vxn \
     --reference-symbol ES --no-write-candidates
+
+# the payoff / entry sweeps (the phase-1 report's §3-§5)
+$PY -m dodgys_dd_quant.backtest.runner --symbol NQ --timeframe 1m --preset pine \
+    --rr 1.0 --killzone --min-checklist 3 --min-checklist-known 4 \
+    --cost-profile nq --slippage-ticks 1 --inversion-window doc --regime vxn \
+    --reference-symbol ES --no-write-candidates
+
+# the vision layer (its own env; no GPU on this host, 0.45 s per candidate)
+.venv-vision/bin/python scripts/vision_signals.py \
+    --candidates data/candidates/NQ_1m_pine_kz.parquet \
+    --bars ~/iflow_lake/iflow/database/03_governed_lake/v2_parquet_lake/us_futures/NQ/1m/NQ_1m.parquet \
+    --out data/candidates/NQ_1m_kz_vision.parquet
+.venv-vision/bin/python scripts/analyze_vision_signal.py \
+    --candidates data/candidates/NQ_1m_pine.parquet \
+    --vision data/candidates/NQ_1m_vision.parquet
 
 # the meta-labeler and then the gated walk-forward
 .venv-ml/bin/python -m dodgys_dd_quant.ml_pipeline.train_meta_labeler \
@@ -370,15 +398,16 @@ $PY research/experiments/e1_rule_falsification.py     # ~5 s, stdlib only
 - **Installed**: `nautilus_trader 1.221.0`, `pandas 2.3.3`, `numpy 2.4.6`, `pyarrow 26.0.0`, `msgspec 0.22.0`,
   `fsspec 2025.12.0` (python3.11 site-packages). **Missing**: `databento`, `yfinance`, `mplfinance`,
   `ultralytics`, `lightgbm`, `scikit-learn`, `pytest` (for 3.11).
-- **GPU**: the vision layer needs CUDA for YOLOv26m; run the detector out-of-band or CPU-fallback explicitly
-  rather than silently degrading.
+- **GPU**: there is **none on this host** (`nvidia-smi` is absent), so the detector runs on CPU at
+  **0.45 s per candidate** — fine for a filtered subset, hopeless for the full 430 k census. The
+  vision layer runs out-of-band in `.venv-vision/` and writes a parquet the strategy joins.
 - **Secrets**: `一些必备apikey和环境.txt` holds live GitHub/HF/Kaggle/CryptoHFT tokens. It must be
   gitignored, never copied into code or committed, and replaced by env vars / `.env` (gitignored) with a
   committed `.env.example` listing key **names** only.
 
 ## Testing & QA
 
-`tests/unit/` exists and runs (84 tests). Planned additions:
+`tests/unit/` exists and runs (86 tests). Planned additions:
 
 ```
 tests/unit/         # state machine, FVG detection, SMT, regime binning, cost model, splits — pure, no engine
@@ -387,7 +416,7 @@ tests/vision/       # IoU computation, render→detect determinism
 ```
 
 - **Framework**: `pytest` in the 3.11 interpreter (the system 3.14 pytest is unusable).
-  `$PY -m pytest tests/unit -q` → 84 passed in ~65 s.
+  `$PY -m pytest tests/unit -q` → 86 passed in ~3 s.
 - **Look-ahead is tested by construction**: `test_truncating_the_future_does_not_change_the_signals`
   re-runs the engine on a truncated series and asserts the earlier signals are byte-identical.
   Every preset is parameterised over it — keep it that way.
@@ -406,8 +435,9 @@ tests/vision/       # IoU computation, render→detect determinism
   (no train/test overlap), assert the visual IoU threshold is applied, assert RL never emits an open action.
 - **Cost model** belongs in the backtest config, not in strategy logic, so backtests and paper runs share it.
 - Tests must be deterministic and isolated from the network; data comes from the local catalog / data lake.
-- **A regression test belongs beside every defect you fix in the rule engine.** Three shipped together
-  with the phase-1 fixes (the leg tracker's pivot cadence, the BE-intact gate, the unknown-SMT case).
+- **A regression test belongs beside every defect you fix in the rule engine.** Five shipped
+  together with the phase-1 fixes: the leg tracker's pivot cadence, the BE-intact gate, the
+  unknown-SMT case, the killzone gate reaching the leg tracker, and the stop multiplier.
 
 ## Market Expansion Reference
 

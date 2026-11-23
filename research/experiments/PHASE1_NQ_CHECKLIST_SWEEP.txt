@@ -1,0 +1,57 @@
+===== preset=pine rr=2.0 stop=wick min_checklist=1 known>=0 =====
+checklist filter: score >= 1, known >= 0 -> 48936/51391 candidates traded
+PORTFOLIO (1 at a time, drop)    n=24625   win%= 34.4  E[R]=  0.0322  E_net= -0.0695  PF= 1.049  t=  3.55  CI95=[0.014,0.050]
+                                 mean cost=0.1017 R   break-even cost=0.0322 R   PF_net=0.904   total R=794.00   max consec losses=27
+                                 mean cost=0.1017 R   break-even cost=0.0322 R   PF_net=0.904   total R=794.00   max consec losses=27
+candidates=48936  approved=48936  trades=24625
+Sharpe (per trade) = 0.0226   deflated Sharpe = 0.9280   DSR p-value = 0.0720   trials = 32
+===== preset=pine rr=2.0 stop=wick min_checklist=2 known>=0 =====
+checklist filter: score >= 2, known >= 0 -> 30890/51391 candidates traded
+PORTFOLIO (1 at a time, drop)    n=16689   win%= 34.2  E[R]=  0.0273  E_net= -0.0565  PF= 1.042  t=  2.48  CI95=[0.006,0.049]
+                                 mean cost=0.0838 R   break-even cost=0.0273 R   PF_net=0.921   total R=456.00   max consec losses=23
+                                 mean cost=0.0838 R   break-even cost=0.0273 R   PF_net=0.921   total R=456.00   max consec losses=23
+candidates=30890  approved=30890  trades=16689
+Sharpe (per trade) = 0.0192   deflated Sharpe = 0.6487   DSR p-value = 0.3513   trials = 32
+===== preset=pine rr=2.0 stop=wick min_checklist=3 known>=0 =====
+checklist filter: score >= 3, known >= 0 -> 11337/51391 candidates traded
+PORTFOLIO (1 at a time, drop)    n=7364    win%= 34.8  E[R]=  0.0429  E_net= -0.0244  PF= 1.066  t=  2.58  CI95=[0.010,0.076]
+                                 mean cost=0.0673 R   break-even cost=0.0429 R   PF_net=0.965   total R=316.00   max consec losses=18
+                                 mean cost=0.0673 R   break-even cost=0.0429 R   PF_net=0.965   total R=316.00   max consec losses=18
+candidates=11337  approved=11337  trades=7364
+Sharpe (per trade) = 0.0300   deflated Sharpe = 0.6850   DSR p-value = 0.3150   trials = 32
+===== preset=pine rr=2.0 stop=wick min_checklist=4 known>=0 =====
+checklist filter: score >= 4, known >= 0 -> 1265/51391 candidates traded
+PORTFOLIO (1 at a time, drop)    n=1142    win%= 32.6  E[R]= -0.0228  E_net= -0.0807  PF= 0.966  t= -0.55  CI95=[-0.104,0.059]
+                                 mean cost=0.0580 R   break-even cost=-0.0228 R   PF_net=0.887   total R=-26.00   max consec losses=20
+                                 mean cost=0.0580 R   break-even cost=-0.0228 R   PF_net=0.887   total R=-26.00   max consec losses=20
+candidates=1265  approved=1265  trades=1142
+Sharpe (per trade) = -0.0162   deflated Sharpe = 0.0043   DSR p-value = 0.9957   trials = 32
+===== preset=pine rr=2.0 stop=wick min_checklist=1 known>=4 =====
+checklist filter: score >= 1, known >= 4 -> 26459/51391 candidates traded
+PORTFOLIO (1 at a time, drop)    n=12407   win%= 34.5  E[R]=  0.0361  E_net= -0.0193  PF= 1.055  t=  2.82  CI95=[0.011,0.061]
+                                 mean cost=0.0554 R   break-even cost=0.0361 R   PF_net=0.972   total R=448.00   max consec losses=27
+                                 mean cost=0.0554 R   break-even cost=0.0361 R   PF_net=0.972   total R=448.00   max consec losses=27
+candidates=26459  approved=26459  trades=12407
+Sharpe (per trade) = 0.0253   deflated Sharpe = 0.7658   DSR p-value = 0.2342   trials = 32
+===== preset=pine rr=2.0 stop=wick min_checklist=2 known>=4 =====
+checklist filter: score >= 2, known >= 4 -> 21249/51391 candidates traded
+PORTFOLIO (1 at a time, drop)    n=10890   win%= 34.1  E[R]=  0.0229  E_net= -0.0339  PF= 1.035  t=  1.68  CI95=[-0.004,0.050]
+                                 mean cost=0.0568 R   break-even cost=0.0229 R   PF_net=0.951   total R=249.00   max consec losses=23
+                                 mean cost=0.0568 R   break-even cost=0.0229 R   PF_net=0.951   total R=249.00   max consec losses=23
+candidates=21249  approved=21249  trades=10890
+Sharpe (per trade) = 0.0161   deflated Sharpe = 0.3356   DSR p-value = 0.6644   trials = 32
+===== preset=pine rr=2.0 stop=wick min_checklist=3 known>=4 =====
+checklist filter: score >= 3, known >= 4 -> 10185/51391 candidates traded
+PORTFOLIO (1 at a time, drop)    n=6422    win%= 34.7  E[R]=  0.0422  E_net= -0.0168  PF= 1.065  t=  2.37  CI95=[0.007,0.077]
+                                 mean cost=0.0590 R   break-even cost=0.0422 R   PF_net=0.976   total R=271.00   max consec losses=18
+                                 mean cost=0.0590 R   break-even cost=0.0422 R   PF_net=0.976   total R=271.00   max consec losses=18
+candidates=10185  approved=10185  trades=6422
+Sharpe (per trade) = 0.0295   deflated Sharpe = 0.6062   DSR p-value = 0.3938   trials = 32
+===== preset=pine rr=2.0 stop=wick min_checklist=4 known>=4 =====
+checklist filter: score >= 4, known >= 4 -> 1265/51391 candidates traded
+PORTFOLIO (1 at a time, drop)    n=1142    win%= 32.6  E[R]= -0.0228  E_net= -0.0807  PF= 0.966  t= -0.55  CI95=[-0.104,0.059]
+                                 mean cost=0.0580 R   break-even cost=-0.0228 R   PF_net=0.887   total R=-26.00   max consec losses=20
+                                 mean cost=0.0580 R   break-even cost=-0.0228 R   PF_net=0.887   total R=-26.00   max consec losses=20
+candidates=1265  approved=1265  trades=1142
+Sharpe (per trade) = -0.0162   deflated Sharpe = 0.0043   DSR p-value = 0.9957   trials = 32
+CHECKLIST SWEEP DONE

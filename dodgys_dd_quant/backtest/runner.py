@@ -132,6 +132,72 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--slippage-ticks", type=int, default=1, choices=(0, 1, 2))
     p.add_argument("--preset", default="honest", choices=sorted(PRESETS), help="rule set")
     p.add_argument("--inversion-window", default="code", choices=("code", "doc"))
+    p.add_argument(
+        "--rr",
+        type=float,
+        default=None,
+        help="reward:risk multiple (default: the preset's). The payoff sweep.",
+    )
+    p.add_argument(
+        "--stop-window",
+        default=None,
+        choices=("confirm", "confirm_plus_one"),
+        help="the window the stop is scanned over. 'confirm_plus_one' is what "
+             "the reference does and it is a look-ahead (the stop depends on "
+             "the fill bar's range).",
+    )
+    p.add_argument(
+        "--stop-placement",
+        default=None,
+        choices=("wick", "body", "ifvg", "swing"),
+        help="where the stop sits: the window extreme, the body edge, the gap's "
+             "far edge, or the recent swing (the doc's 'beyond the swing').",
+    )
+    p.add_argument(
+        "--stop-mult",
+        type=float,
+        default=None,
+        help="move the stop away from the entry by this factor. The cost of a "
+             "trade is a fixed number of dollars, so a wider stop lowers the "
+             "cost in R.",
+    )
+    p.add_argument(
+        "--killzone",
+        action="store_true",
+        help="gate the signals on the doc's NY killzones (09:30-11:30 and "
+             "13:30-15:30 ET). The reference computes setups on every bar and "
+             "gates only the alerts, so this is the doc's rule, not the code's.",
+    )
+    p.add_argument(
+        "--min-checklist",
+        type=int,
+        default=None,
+        help="keep only candidates whose checklist score is at least N. This is "
+             "the implementable version of the doc's 'A/A+ only' gate: the "
+             "five named conditions are booleans, the grade thresholds are not "
+             "defined in any artefact (D8).",
+    )
+    p.add_argument(
+        "--min-checklist-known",
+        type=int,
+        default=0,
+        help="also require that at least K of the checklist's conditions were "
+             "decidable (4 without the vision layer).",
+    )
+    p.add_argument(
+        "--vision-signals",
+        default=None,
+        help="a parquet of the vision layer's signals (scripts/vision_signals.py), "
+             "joined to the candidates on ts_event.",
+    )
+    p.add_argument(
+        "--vision-conf",
+        type=float,
+        default=None,
+        help="keep only the candidates whose detector confidence is at least "
+             "this. The IoU gate is the doc's; the confidence is what carries "
+             "the signal.",
+    )
     p.add_argument("--models-root", default="artifacts/models")
     p.add_argument("--candidates-out", default=None, help="path of the D2 candidate log")
     p.add_argument("--reference-symbol", default=None, help="SMT reference instrument")
@@ -166,6 +232,20 @@ def main(argv: list[str] | None = None) -> int:
     # --- configuration ----------------------------------------------------
     config: RuleConfig = PRESETS[args.preset]
     config = replace(config, symbol=args.symbol, timeframe=args.timeframe)
+    if args.rr is not None:
+        if args.rr <= 0:
+            raise SystemExit(f"--rr must be positive, got {args.rr}")
+        config = replace(config, rr=args.rr)
+    if args.stop_window is not None:
+        config = replace(config, stop_window=args.stop_window)
+    if args.stop_placement is not None:
+        config = replace(config, stop_placement=args.stop_placement)
+    if args.stop_mult is not None:
+        if args.stop_mult <= 0:
+            raise SystemExit(f"--stop-mult must be positive, got {args.stop_mult}")
+        config = replace(config, stop_mult=args.stop_mult)
+    if args.killzone:
+        config = replace(config, killzone_gate=True)
     if args.inversion_window == "doc":
         config = config.with_doc_window()
     if config.min_gap_atr_mult is None:
@@ -207,6 +287,37 @@ def main(argv: list[str] | None = None) -> int:
     profile = get_profile(args.cost_profile or ("binance" if args.symbol.isupper() and "USDT" in args.symbol else "nq"))
 
     # --- walk forward -----------------------------------------------------
+    # The checklist filter is a **rule-layer** filter: the D2 log keeps every
+    # candidate (nothing is erased), but only the ones that pass it are traded.
+    traded = log.candidates
+    if args.min_checklist is not None:
+        traded = [
+            c for c in log.candidates
+            if c.checklist_score >= args.min_checklist
+            and c.checklist_known >= args.min_checklist_known
+        ]
+        print(f"checklist filter: score >= {args.min_checklist}, "
+              f"known >= {args.min_checklist_known} -> {len(traded)}/{len(log.candidates)} "
+              f"candidates traded")
+
+    # The vision layer's filter: keep the candidates the detector confirmed
+    # with at least the given confidence.  A candidate the detector never saw
+    # has no confidence and is therefore dropped.
+    if args.vision_signals and args.vision_conf is not None:
+        import pyarrow.parquet as pq
+
+        sig = pq.read_table(args.vision_signals)
+        conf_by_ts = {
+            int(t): float(c)
+            for t, c in zip(sig.column("ts_event").to_numpy(),
+                            sig.column("vision_confidence").to_numpy())
+        }
+        kept = [c for c in traded
+                if conf_by_ts.get(int(c.ts_event), -1.0) >= args.vision_conf]
+        print(f"vision filter: confidence >= {args.vision_conf} -> "
+              f"{len(kept)}/{len(traded)} candidates traded")
+        traded = kept
+
     folds = load_walk_forward_index(args.models_root, args.symbol, args.timeframe)
     scorer = None
     feature_fn = None
@@ -266,12 +377,18 @@ def main(argv: list[str] | None = None) -> int:
 
     portfolio_trades = None
     if args.portfolio == "defer":
+        if args.min_checklist is not None:
+            raise SystemExit(
+                "--min-checklist cannot be combined with --portfolio defer: the "
+                "deferred arm re-runs the engine and would ignore the filter. "
+                "Use the default 'drop' accounting."
+            )
         # the experiment harness's accounting: a blocked signal stays pending
         # and may still trigger later, at a different price
         portfolio_trades = run_deferred_portfolio(bars, config)
 
     report = walk_forward(
-        log.candidates,
+        traded,
         len(bars),
         folds,
         profile=profile,

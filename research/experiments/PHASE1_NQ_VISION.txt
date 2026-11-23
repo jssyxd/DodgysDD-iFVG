@@ -1,0 +1,29 @@
+scored candidates joined to the log : 2646
+  with a resolved outcome           : 2646
+
+-- by the doc's vertical-IoU gate (tau_v = 0.75) --
+  confirmed (IoU >= 0.75)            n=  1920  win%=34.38  E[R]=+0.0312
+  not confirmed                      n=   726  win%=32.23  E[R]=-0.0331
+
+  win rate   confirmed 34.38%  vs  unconfirmed 32.23%
+  two-proportion z = +1.04   (|z| > 1.96 is significant at 5%)
+  E[R]       confirmed +0.0312  vs  unconfirmed -0.0331
+
+-- by the detector's confidence (detected boxes only) --
+  conf in [0.0, 0.4)                 n=   241  win%=28.22  E[R]=-0.1535
+  conf in [0.4, 0.6)                 n=   459  win%=36.82  E[R]=+0.1046
+  conf in [0.6, 0.8)                 n=  1060  win%=34.25  E[R]=+0.0274
+  conf in [0.8, 1.0)                 n=   306  win%=35.95  E[R]=+0.0784
+
+  point-biserial corr(IoU, outcome) = +0.0021  (n=2066)
+
+===== by the detector confidence =====
+n = 2646 resolved candidates (a uniform 5.9% sample of the pine census)
+
+filter                            n     win%    E[R]     z vs the rest
+  vision IoU >= 0.75 (the doc's gate)       1923  34.43 +0.0328   z=+1.13   (rest n=  723 win%=32.09 E[R]=-0.0373)
+  detector confidence >= 0.4                1825  35.18 +0.0553   z=+2.26   (rest n=  821 win%=30.69 E[R]=-0.0792)
+  detector confidence >= 0.5                1650  35.03 +0.0509   z=+1.74   (rest n=  996 win%=31.73 E[R]=-0.0482)
+  detector confidence >= 0.6                1366  34.63 +0.0388   z=+0.94   (rest n= 1280 win%=32.89 E[R]=-0.0133)
+  detector confidence >= 0.75                687  33.48 +0.0044   z=-0.20   (rest n= 1959 win%=33.89 E[R]=+0.0168)
+  never detected                             580  31.72 -0.0483   z=-1.19   (rest n= 2066 win%=34.37 E[R]=+0.0310)

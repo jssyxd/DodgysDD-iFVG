@@ -132,6 +132,10 @@ class RuleConfig:
 
     # --- risk -------------------------------------------------------------
     rr: float = DEFAULT_RR
+    #: The stop is moved away from the entry by this factor.  A trade costs a
+    #: fixed number of dollars, so a wider stop lowers the cost **in R** — the
+    #: only lever that touches the cost ratio directly.
+    stop_mult: float = 1.0
 
     # --- context gates ----------------------------------------------------
     #: The doc's killzone is a hard gate; the reference's sessions gate alerts
@@ -284,6 +288,12 @@ class Candidate:
     bars_to_inversion: int = 0
     minutes_from_us_open: int = 0
     checklist_score: float = 0.0
+    #: How many of the checklist's conditions could actually be **decided**
+    #: for this candidate.  ``smt_divergence`` is undecidable where the
+    #: reference instrument does not cover the window and the VXN regime is
+    #: undecidable when no regime series is attached; the vision condition is
+    #: never decidable because the layer does not exist (D12).
+    checklist_known: int = 0
     checklist_flags: dict[str, bool] = field(default_factory=dict)
     smt_divergence: int = -1
     sweep_detected: int = 0
@@ -454,18 +464,24 @@ def run_state_machine(
     for ev in sweeps:
         sweep_flags[ev.bar] = True
 
+    # The bar gate (the doc's killzone and the sweep precondition) applies to
+    # **both** scanning paths.  It used to be built only for the vectorised
+    # scanner, so ``killzone_gate`` was silently ignored by the leg tracker
+    # and the doc's session rule had no effect on the reference-faithful arm.
+    gate = _bar_gates(config, minutes, sweep_flags)
     if config.leg_tracker:
-        confirmations = _leg_confirmations(bars, fvgs, config, sweep_flags, pivots)
+        confirmations = _leg_confirmations(bars, fvgs, config, sweep_flags, pivots, gate)
     else:
-        gate = _bar_gates(config, minutes, sweep_flags)
         confirmations = _scan_confirmations(bars, fvgs, config, gate)
 
     candidates = _build_candidates(
-        bars, fvgs, confirmations, config, origins, minutes, extremes, sweep_flags
+        bars, fvgs, confirmations, config, origins, minutes, extremes, sweep_flags,
+        pivots,
     )
     _attach_checklist(candidates, bars, pivots, extremes, atr, config)
     _attach_smt(candidates, bars, reference, config)
     _attach_regime(candidates, bars, regime)
+    _score_checklist(candidates)
     _resolve_outcomes(candidates, bars, config)
     return CandidateLog(candidates, config.symbol, config.timeframe)
 
@@ -577,6 +593,7 @@ def _leg_confirmations(
     config: RuleConfig,
     sweep_flags: np.ndarray,
     pivots: PivotLevels,
+    gate: np.ndarray | None = None,
 ) -> list[_Confirmation]:
     """The reference's leg tracker (R1-R5): one live candidate per direction.
 
@@ -688,7 +705,10 @@ def _leg_confirmations(
                                 live = i
 
                 # --- trigger test ------------------------------------------
-                if live >= 0 and not confirmed:
+                # The bar gate applies to the **confirmation bar**, exactly as
+                # in the vectorised scanner: the doc's killzone and the sweep
+                # precondition decide whether a setup may be taken.
+                if live >= 0 and not confirmed and (gate is None or gate[c]):
                     age = c - int(fvgs.newest[live])
                     if min_age <= age <= max_age:
                         far = (
@@ -824,6 +844,7 @@ def _build_candidates(
     minutes: np.ndarray,
     extremes,
     sweep_flags: np.ndarray,
+    pivots: PivotLevels | None = None,
 ) -> list[Candidate]:
     """Turn confirmations into fully priced candidates."""
     n = len(bars)
@@ -861,7 +882,7 @@ def _build_candidates(
 
         # --- stop ----------------------------------------------------------
         stop, risk = _place_stop(
-            bars, config, side, c, confirm_bar, entry_price, gap_low, gap_high
+            bars, config, side, c, confirm_bar, entry_price, gap_low, gap_high, pivots
         )
         if stop is None or risk <= 0.0:
             continue
@@ -920,6 +941,7 @@ def _place_stop(
     entry_price: float,
     gap_low: float,
     gap_high: float,
+    pivots: PivotLevels | None = None,
 ) -> tuple[float | None, float]:
     """Place the stop and return ``(stop, risk)``.
 
@@ -955,19 +977,39 @@ def _place_stop(
         candle_bullish = bars.close[bar] > bars.open[bar]
         stop = float(bars.open[bar]) if candle_bullish == (side > 0) else float(bars.close[bar])
     elif config.stop_placement == "swing":
-        stop = _swing_stop(bars, side, confirm_bar)
+        stop = _swing_stop(bars, side, confirm_bar, pivots)
         if stop is None:
             return None, 0.0
 
     risk = (entry_price - stop) if side > 0 else (stop - entry_price)
     if risk <= 0.0:
         return None, 0.0
+
+    # The cost of a trade is a fixed number of dollars, so its cost **in R**
+    # falls as the stop gets wider.  ``stop_mult`` moves the stop away from
+    # the entry by that factor, which is the only lever that touches the
+    # cost ratio directly.
+    if config.stop_mult != 1.0:
+        stop = entry_price + (stop - entry_price) * config.stop_mult
+        risk = (entry_price - stop) if side > 0 else (stop - entry_price)
+        if risk <= 0.0:
+            return None, 0.0
     return stop, risk
 
 
-def _swing_stop(bars: Bars, side: int, confirm_bar: int) -> float | None:
-    """The most recent swing extreme published before ``confirm_bar``."""
-    pivots = causal_pivots(bars.high, bars.low, left=SWING_FRACTAL - 1, right=SWING_RIGHT_BARS)
+def _swing_stop(
+    bars: Bars, side: int, confirm_bar: int, pivots: PivotLevels | None = None
+) -> float | None:
+    """The most recent swing extreme published before ``confirm_bar``.
+
+    The pivots are passed in: recomputing them here would make the cost of
+    one candidate proportional to the length of the whole series, so the
+    ``"swing"`` stop placement would take hours on a ten-year sample.
+    """
+    if pivots is None:
+        pivots = causal_pivots(
+            bars.high, bars.low, left=SWING_FRACTAL - 1, right=SWING_RIGHT_BARS
+        )
     if side > 0:
         end = int(np.searchsorted(pivots.low_known, confirm_bar, side="left"))
         if end == 0:
@@ -1046,6 +1088,34 @@ def _attach_checklist(
         }
         cand.checklist_flags = flags
         cand.checklist_score = float(sum(1 for v in flags.values() if v))
+
+
+def _score_checklist(candidates: list[Candidate]) -> None:
+    """Score the checklist **after** every condition has been attached.
+
+    The score must not be computed inside :func:`_attach_checklist`: the SMT
+    and the VXN regime are attached later, so scoring there silently counted
+    them as failures and capped the score at 2 of 5.
+
+    A condition that could not be **decided** — the SMT where the reference
+    instrument does not cover the window, the regime where no series is
+    attached — is not counted against the candidate.  It is excluded from both
+    the score and the number of decidable conditions
+    (:attr:`Candidate.checklist_known`), so the score stays comparable across
+    the sample.
+    """
+    for cand in candidates:
+        flags = cand.checklist_flags
+        decidable = {
+            "smt_divergence": cand.smt_divergence >= 0,
+            "no_obstruction": True,
+            "liquidity_target_2r": True,
+            "vision_iou_pass": False,        # the layer does not exist (D12)
+            "vxn_regime_normal": cand.vxn_regime >= 0,
+        }
+        known = [name for name, ok in decidable.items() if ok]
+        cand.checklist_known = len(known)
+        cand.checklist_score = float(sum(1 for name in known if flags.get(name, False)))
 
 
 # ---------------------------------------------------------------------------
@@ -1264,6 +1334,8 @@ def run_deferred_portfolio(
     fvgs = detect_fvg(bars, atr, config.min_gap_atr_mult)
     if len(fvgs) == 0:
         return []
+    # computed once: the "swing" stop placement needs them for every candidate
+    pivots = causal_pivots(bars.high, bars.low, left=SWING_FRACTAL - 1, right=SWING_RIGHT_BARS)
 
     min_age = max(0, config.inversion_min_bars)
     max_age = max(min_age, config.inversion_max_bars)
@@ -1347,7 +1419,7 @@ def run_deferred_portfolio(
             age = confirm_bar - int(fvgs.newest[i_fvg])
             if age < min_age or age > max_age:
                 continue
-            cand = _price_candidate(bars, fvgs, i_fvg, confirm_bar, config)
+            cand = _price_candidate(bars, fvgs, i_fvg, confirm_bar, config, pivots)
             if cand is None:
                 continue
             confirmed[i_fvg] = True
@@ -1408,6 +1480,7 @@ def _price_candidate(
     i_fvg: int,
     confirm_bar: int,
     config: RuleConfig,
+    pivots: PivotLevels | None = None,
 ) -> Candidate | None:
     """Price one confirmed setup (entry, stop, target)."""
     n = len(bars)
@@ -1427,7 +1500,7 @@ def _price_candidate(
         entry_price = float(bars.open[entry_bar])
 
     stop, risk = _place_stop(
-        bars, config, side, c, confirm_bar, entry_price, gap_low, gap_high
+        bars, config, side, c, confirm_bar, entry_price, gap_low, gap_high, pivots
     )
     if stop is None or risk <= 0.0:
         return None

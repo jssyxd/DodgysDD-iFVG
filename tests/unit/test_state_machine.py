@@ -524,3 +524,32 @@ def test_an_intact_origin_keeps_the_candidate():
             f"candidate at bar {cand.confirm_bar} kept although its origin "
             f"({ob}, {cand.origin_price}) was already taken out"
         )
+
+
+def test_the_killzone_gate_applies_to_the_leg_tracker():
+    """The doc's session rule must reach the reference-faithful path too.
+
+    The bar gate used to be built only for the vectorised scanner, so
+    ``killzone_gate`` was silently ignored by the leg tracker and the doc's
+    killzone had no effect on the reference-faithful arm.
+    """
+    bars = _random_bars(3000, seed=5)
+    without = run_state_machine(bars, replace(PRESETS["pine"], killzone_gate=False))
+    with_gate = run_state_machine(bars, replace(PRESETS["pine"], killzone_gate=True))
+    assert len(with_gate.candidates) < len(without.candidates), (
+        "the killzone gate did not remove any setup: it is not being applied "
+        "to the leg-tracker path"
+    )
+
+
+def test_a_stop_multiplier_widens_the_stop():
+    """``stop_mult`` moves the stop away from the entry, so the risk grows."""
+    bars = _random_bars(3000, seed=5)
+    base = run_state_machine(bars, PRESETS["pine"])
+    wide = run_state_machine(bars, replace(PRESETS["pine"], stop_mult=2.0))
+    assert len(wide.candidates) == len(base.candidates)
+    for a, b in zip(base.candidates, wide.candidates):
+        assert b.risk == pytest.approx(a.risk * 2.0)
+        assert b.stop_price == pytest.approx(
+            b.entry_price + (a.stop_price - a.entry_price) * 2.0
+        )

@@ -1,0 +1,7 @@
+===== require_sweep + killzone + checklist =====
+checklist filter: score >= 3, known >= 4 -> 938/5299 candidates traded
+PORTFOLIO (1 at a time, drop)    n=822     win%= 36.9  E[R]=  0.1058  E_net=  0.0654  PF= 1.168  t=  2.10  CI95=[0.007,0.205]
+                                 mean cost=0.0404 R   break-even cost=0.1058 R   PF_net=1.099   total R=87.00   max consec losses=11
+                                 mean cost=0.0404 R   break-even cost=0.1058 R   PF_net=1.099   total R=87.00   max consec losses=11
+Sharpe (per trade) = 0.0731   deflated Sharpe = 0.4256   DSR p-value = 0.5744   trials = 50
+SWEEPPRE DONE
