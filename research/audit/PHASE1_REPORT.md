@@ -205,7 +205,22 @@ filter                            n     win%    E[R]     z vs the rest
 The confidence is used as the filter, not the IoU. The doc's IoU gate is kept as the **geometry check** — it answers "did the model see the same gap?", which it passes 72.6 % of the time — and the confidence answers "was the price action clean?".
 
 
-## 8. Verdict against the design doc's phase-1 gate
+## 8. Does it generalise? The configuration on other instruments
+
+The configuration above was **selected on NQ**. Running it unchanged on two other instruments is the only honest test available: the ES panel (2020-11 → 2024-07, the SMT reference is NQ) and BTCUSDT (2023-01 → 2026-11, a different market and a different period).
+
+| instrument | trades | win% | E[R] gross | E[R] net | cost (R) | PF | t | 95 % CI |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ES 1m | 129 | 28.7 | **-0.1395** | -0.2959 | 0.1564 | 0.804 | -1.16 | [-0.375, 0.096] |
+| ES 1m | 1000 | 33.6 | **0.0080** | -0.1343 | 0.1423 | 1.012 | 0.18 | [-0.080, 0.096] |
+| BTCUSDT 1m (no killzone, no checklist) -- the plain reference arm | 16133 | 34.6 | **0.0380** | -0.4266 | 0.4646 | 1.058 | 3.38 | [0.016, 0.060] |
+
+**The rule engine's gross edge replicates on BTCUSDT** (+0.0380 R, t = 3.38, CI [0.016, 0.060]) — the same magnitude as NQ, on a different market and a different period. That is the strongest evidence that the edge is a property of the *rule*, not of NQ.
+
+**But the filtered configuration does not generalise.** On ES the killzone + checklist arm is **−0.140 R** (t = −1.16), and even without the checklist ES carries only +0.008 R (t = 0.18) — against NQ's +0.032 R. The session and checklist filters were chosen on NQ and they do not carry to a different instrument, and the ES panel's 55 % weekday coverage makes its sample thin as well. **This is the pre-registered test failing, and it is reported as such.**
+
+
+## 9. Verdict against the design doc's phase-1 gate
 
 | Gate | Required | Measured | Met? |
 | --- | --- | --- | --- |
@@ -215,7 +230,7 @@ The confidence is used as the filter, not the IoU. The doc's IoU gate is kept as
 | Population | A/A+ only | not computable — no artefact defines a grade (D8); the five named booleans are used instead | substituted |
 | Sample | 10 years, 3.66 M bars | the filtered arm trades 2020-11 → 2025-07 because the SMT is undecidable before ES starts | partly |
 
-### 8.1 The answer to "entry or payoff?"
+### 9.1 The answer to "entry or payoff?"
 
 **The edge is in the entry.** The evidence, in order of size:
 
@@ -228,16 +243,20 @@ The confidence is used as the filter, not the IoU. The doc's IoU gate is kept as
 
 So the strategy was never a payoff problem: the reference's 1:2 target was fine. It was an **entry** problem — the setups outside the NY session and outside the named conditions are noise, and they cost more in fees than they earn.
 
-### 8.2 What is still missing
+### 9.2 What is still missing
 
 **No configuration survives the multiple-testing correction.** The deflated Sharpe is computed against the ~60 arms tried in this project; the best p-value is 0.0672 and the net-positive arms are all above 0.4. A configuration *selected* as the best of 60 on the same sample it is measured on is a hypothesis, not a result.
 
-The right next step is therefore **not** another filter but a **pre-registered confirmation**: freeze the configuration (killzone + checklist ≥ 3 with full coverage, RR 2, the leg tracker, NQ costs), then run it forward on data that played no part in choosing it, and on a second instrument.
+The right next step is therefore **not** another filter but a **pre-registered confirmation** — and the first such test has already been run and **failed on ES** (§8). What survives is narrower and more honest:
+
+* the **rule engine's gross edge** replicates on BTCUSDT (+0.038 R, t = 3.38), so it is a property of the rule, not of NQ;
+* the **filters** (session, checklist) were selected on NQ and do not carry to another instrument;
+* **no configuration survives the multiple-testing correction** on the sample it was selected on.
 
 The vision layer is **built and it works**, and it is the one filter with significant discriminating power that is neither the session nor the checklist: the detector's confidence (z = +2.26, §7). It has not yet been run over the *traded* set, so its effect on the portfolio expectancy is still unmeasured — and because the confidence threshold was picked from four candidates, it carries its own selection risk.
 
 
-## 9. What would move the number
+## 10. What would move the number
 
 | lever | measured effect | status |
 | --- | --- | --- |
@@ -248,5 +267,6 @@ The vision layer is **built and it works**, and it is the one filter with signif
 | the doc's mandatory sweep precondition | gross E[R] +0.106, trades halved | **done** — DSR p 0.574 |
 | the vision layer's detector confidence | win% 35.2 vs 30.7, E[R] +0.055 vs −0.079, **z = +2.26** | **built** — §7; the effect on the portfolio expectancy is not yet measured |
 | the meta-labeler | raises gross E[R] but AUC 0.47–0.53 | **measured, exhausted** on the current features |
+| the same configuration on another instrument | BTCUSDT +0.038 R (t = 3.38) — the edge replicates; ES −0.140 R | **done** — the edge generalises, the filters do not |
 
 A pre-registered forward test of the frozen configuration is the only thing left before this can be called an edge.

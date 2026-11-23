@@ -1,0 +1,27 @@
+===== ES 1m  (kz + checklist, RR 2) -- SMT reference NQ =====
+checklist filter: score >= 3, known >= 4 -> 138/1369 candidates traded
+PORTFOLIO (1 at a time, drop)    n=129     win%= 28.7  E[R]= -0.1395  E_net= -0.2959  PF= 0.804  t= -1.16  CI95=[-0.375,0.096]
+                                 mean cost=0.1564 R   break-even cost=-0.1395 R   PF_net=0.641   total R=-18.00   max consec losses=9
+                                 mean cost=0.1564 R   break-even cost=-0.1395 R   PF_net=0.641   total R=-18.00   max consec losses=9
+candidates=138  approved=138  trades=129
+Sharpe (per trade) = -0.1024   deflated Sharpe = 0.0005   DSR p-value = 0.9995   trials = 50
+===== ES 1m  (kz + checklist, RR 2), NO checklist filter =====
+PORTFOLIO (1 at a time, drop)    n=1000    win%= 33.6  E[R]=  0.0080  E_net= -0.1343  PF= 1.012  t=  0.18  CI95=[-0.080,0.096]
+                                 mean cost=0.1423 R   break-even cost=0.0080 R   PF_net=0.823   total R=8.00   max consec losses=12
+                                 mean cost=0.1423 R   break-even cost=0.0080 R   PF_net=0.823   total R=8.00   max consec losses=12
+candidates=1369  approved=1369  trades=1000
+Sharpe (per trade) = 0.0056   deflated Sharpe = 0.0178   DSR p-value = 0.9822   trials = 50
+===== BTCUSDT 1m (kz + checklist, RR 2) =====
+checklist filter: score >= 3, known >= 4 -> 0/7087 candidates traded
+PORTFOLIO (1 at a time, drop)    n=0       win%=  nan  E[R]=     n/a  E_net=     n/a  PF=   n/a  t=   n/a  CI95=[n/a,n/a]
+                                 mean cost=n/a R   break-even cost=n/a R   PF_net=n/a   total R=0.00   max consec losses=0
+                                 mean cost=n/a R   break-even cost=n/a R   PF_net=n/a   total R=0.00   max consec losses=0
+candidates=0  approved=0  trades=0
+Sharpe (per trade) = n/a   deflated Sharpe = n/a   DSR p-value = n/a   trials = 50
+===== BTCUSDT 1m (no killzone, no checklist) -- the plain reference arm =====
+PORTFOLIO (1 at a time, drop)    n=16133   win%= 34.6  E[R]=  0.0380  E_net= -0.4266  PF= 1.058  t=  3.38  CI95=[0.016,0.060]
+                                 mean cost=0.4646 R   break-even cost=0.0380 R   PF_net=0.554   total R=613.00   max consec losses=25
+                                 mean cost=0.4646 R   break-even cost=0.0380 R   PF_net=0.554   total R=613.00   max consec losses=25
+candidates=40651  approved=40651  trades=16134
+Sharpe (per trade) = 0.0266   deflated Sharpe = 0.8675   DSR p-value = 0.1325   trials = 50
+OOS DONE

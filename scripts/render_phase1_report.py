@@ -386,8 +386,37 @@ def main() -> int:
                  "gap?\", which it passes 72.6 % of the time — and the confidence answers "
                  "\"was the price action clean?\".\n")
 
+    # --------------------------------------------------- generalisation
+    oos = parse_sections("PHASE1_OOS_OTHER_INSTRUMENTS.txt")
+    if oos:
+        L.append("\n## 8. Does it generalise? The configuration on other instruments\n")
+        L.append("The configuration above was **selected on NQ**. Running it unchanged on "
+                 "two other instruments is the only honest test available: the ES panel "
+                 "(2020-11 → 2024-07, the SMT reference is NQ) and BTCUSDT "
+                 "(2023-01 → 2026-11, a different market and a different period).\n")
+        L.append(row(["instrument", "trades", "win%", "E[R] gross", "E[R] net", "cost (R)",
+                      "PF", "t", "95 % CI"]))
+        L.append(row(["---"] * 9))
+        for r in oos:
+            if "er" not in r:
+                continue
+            L.append(row([r["label"].split("  (")[0], r["n"], r["win"], f"**{r['er']}**",
+                      r["enet"], r.get("cost", "?"), r["pf"], r["t"],
+                      f"[{r['lo']}, {r['hi']}]"]))
+        L.append("\n**The rule engine's gross edge replicates on BTCUSDT** (+0.0380 R, "
+                 "t = 3.38, CI [0.016, 0.060]) — the same magnitude as NQ, on a different "
+                 "market and a different period. That is the strongest evidence that the edge "
+                 "is a property of the *rule*, not of NQ.\n")
+        L.append("**But the filtered configuration does not generalise.** On ES the "
+                 "killzone + checklist arm is **−0.140 R** (t = −1.16), and even without the "
+                 "checklist ES carries only +0.008 R (t = 0.18) — against NQ's +0.032 R. The "
+                 "session and checklist filters were chosen on NQ and they do not carry to a "
+                 "different instrument, and the ES panel's 55 % weekday coverage makes its "
+                 "sample thin as well. **This is the pre-registered test failing, and it is "
+                 "reported as such.**\n")
+
     # ----------------------------------------------------------- the verdict
-    L.append("\n## 8. Verdict against the design doc's phase-1 gate\n")
+    L.append("\n## 9. Verdict against the design doc's phase-1 gate\n")
     L.append(row(["Gate", "Required", "Measured", "Met?"]))
     L.append(row(["---"] * 4))
     L.append(row(["Profit factor", "**> 1.25**", "1.048 rule-only; 1.144 gross / **1.070 net** "
@@ -402,7 +431,7 @@ def main() -> int:
     L.append(row(["Sample", "10 years, 3.66 M bars", "the filtered arm trades 2020-11 → "
                                                       "2025-07 because the SMT is undecidable "
                                                       "before ES starts", "partly"]))
-    L.append("\n### 8.1 The answer to \"entry or payoff?\"\n")
+    L.append("\n### 9.1 The answer to \"entry or payoff?\"\n")
     L.append("**The edge is in the entry.** The evidence, in order of size:\n")
     L.append("| lever | effect on gross E[R] | what it is |")
     L.append("|---|---|---|")
@@ -414,16 +443,21 @@ def main() -> int:
              "fine. It was an **entry** problem — the setups outside the NY session and "
              "outside the named conditions are noise, and they cost more in fees than they "
              "earn.\n")
-    L.append("### 8.2 What is still missing\n")
+    L.append("### 9.2 What is still missing\n")
     L.append("**No configuration survives the multiple-testing correction.** The deflated "
              "Sharpe is computed against the ~60 arms tried in this project; the best "
              f"p-value is {min(float(r['dsr_p']) for r in confirm if 'dsr_p' in r):.4f} and the "
              "net-positive arms are all above 0.4. A configuration *selected* as the best of "
              "60 on the same sample it is measured on is a hypothesis, not a result.\n")
     L.append("The right next step is therefore **not** another filter but a **pre-registered "
-             "confirmation**: freeze the configuration (killzone + checklist ≥ 3 with full "
-             "coverage, RR 2, the leg tracker, NQ costs), then run it forward on data that "
-             "played no part in choosing it, and on a second instrument.\n")
+             "confirmation** — and the first such test has already been run and **failed "
+             "on ES** (§8). What survives is narrower and more honest:\n")
+    L.append("* the **rule engine's gross edge** replicates on BTCUSDT (+0.038 R, t = 3.38), "
+             "so it is a property of the rule, not of NQ;\n"
+             "* the **filters** (session, checklist) were selected on NQ and do not carry to "
+             "another instrument;\n"
+             "* **no configuration survives the multiple-testing correction** on the sample it "
+             "was selected on.\n")
     L.append("The vision layer is **built and it works**, and it is the one filter with "
              "significant discriminating power that is neither the session nor the "
              "checklist: the detector's confidence (z = +2.26, §7). It has not yet been run "
@@ -432,7 +466,7 @@ def main() -> int:
              "candidates, it carries its own selection risk.\n")
 
     # --------------------------------------------------- what moves the number
-    L.append("\n## 9. What would move the number\n")
+    L.append("\n## 10. What would move the number\n")
     L.append(row(["lever", "measured effect", "status"]))
     L.append(row(["---"] * 3))
     L.append(row(["the doc's NY killzone", "gross E[R] +0.049 R, net E[R] −0.070 → +0.047",
@@ -448,6 +482,9 @@ def main() -> int:
                   "**built** — §7; the effect on the portfolio expectancy is not yet measured"]))
     L.append(row(["the meta-labeler", "raises gross E[R] but AUC 0.47–0.53",
                   "**measured, exhausted** on the current features"]))
+    L.append(row(["the same configuration on another instrument",
+                   "BTCUSDT +0.038 R (t = 3.38) — the edge replicates; ES −0.140 R",
+                   "**done** — the edge generalises, the filters do not"]))
     L.append("\nA pre-registered forward test of the frozen configuration is the only thing "
              "left before this can be called an edge.\n")
 
