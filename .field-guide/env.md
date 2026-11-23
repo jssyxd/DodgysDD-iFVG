@@ -141,3 +141,27 @@ Three separate blockers, each measured:
 Working path: `scripts/sync_via_api.sh` -> `scripts/push_via_api.py` (blobs -> tree -> commit ->
 ref), then `git fetch origin && git reset --hard origin/main` so local and remote converge on the
 same commit.
+
+## 2026-11-23 — an unmounted NFS lake silently shows a STALE LOCAL COPY
+`~/iflow_lake` is an NFS mount point. When the mount drops, the directory
+**still exists** and still contains a stale copy of the lake tree — with the
+*old* small files (NQ 1m was 94 KB instead of 43 MB, and every file had
+October timestamps). Nothing errors; `ls` succeeds; the paths look right.
+
+The trap: it reads exactly like "the server was reverted and my published data
+is gone". It is not — the server was fine, the client was just reading the
+directory *underneath* the mount point.
+
+**Always check `mount | grep iflow` before trusting any lake listing**, and
+re-mount with:
+
+```bash
+sudo -n mount -t nfs -o rw,vers=3,proto=tcp fnos2.local:/fs/1000/nfs ~/iflow_lake
+```
+
+(`sudo -n` works without a password prompt on this host; it prints one
+systemd symlink line and succeeds.)
+
+Everything published earlier that day — the 43 MB NQ 1-minute parquet, the
+7.2 MB ES one, the roll reports and the three audit reports — was intact on
+the server and needed no republishing.
