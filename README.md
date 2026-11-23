@@ -3,10 +3,12 @@
 A research-and-build repository for the **DodgysDD "Inversion Fair Value Gap" (iFVG)** trading strategy,
 targeting **NautilusTrader** as the single backtest and live engine.
 
-> **Status: research complete, system not yet built.**
-> The strategy's rules are specified and independently audited; the four-layer implementation
-> (`dodgys_dd_quant/`) does **not exist yet**. A first falsification test on real 1-minute data found
-> **no edge** — see [Current findings](#current-findings).
+> **Status: phase 1 executed on real NQ 1-minute data (2015–2025).**
+> The rule engine, the cost model, the rolling walk-forward and the meta-labeler are implemented and
+> have been run against **3,664,241 real NQ 1-minute bars**. The reference-faithful arm has a
+> **statistically significant but small** gross edge (+0.0317 R, t = 3.52) that is **three times too
+> small to cover the 0.102 R round trip** — see [Phase 1](#phase-1-executed) and
+> [research/audit/PHASE1_REPORT.md](research/audit/PHASE1_REPORT.md).
 
 ---
 
@@ -43,6 +45,42 @@ Read these before writing any code — they are measured, not opinions.
 replica of the closed-source TradingView indicator contains **no ATR filter, no SMT divergence, no
 A+/A/B/C scoring and no checklist**. The doc's `0.25 × ATR(14)` gap floor, the SMT leg and the grade
 system have **no code basis** in any artefact we have.
+
+---
+
+## Phase 1, executed
+
+On **3,664,241 real NQ 1-minute bars** (2015-01-01 → 2025-07-25, with the quarterly splice detected
+and masked), one position at a time, NQ costs (~$4.50 round trip + 1 tick):
+
+| arm | what it adds | trades | win% | E[R] gross | E[R] net | PF | t | 95 % CI |
+|---|---|---|---|---|---|---|---|---|
+| `honest` | the vectorised scanner | 45,734 | 32.9 | −0.0127 | −0.1436 | 0.981 | −1.93 | [−0.026, 0.000] |
+| `pine_be` | + the BE-intact gate | 45,269 | 32.9 | −0.0135 | −0.1450 | 0.980 | −2.03 | [−0.026, −0.000] |
+| `pine_leg` | + the leg tracker | 25,228 | 34.3 | **+0.0303** | −0.0714 | 1.046 | **+3.38** | **[0.013, 0.048]** |
+| `pine` | both (reference-faithful) | 25,083 | 34.4 | **+0.0317** | −0.0700 | 1.048 | **+3.52** | **[0.014, 0.049]** |
+| `doc` | the doc's ATR floor + sweep + killzone | 7,399 | 34.1 | +0.0242 | −0.1021 | 1.037 | +1.46 | [−0.008, +0.057] |
+
+**Three findings that change the project.**
+
+1. **The leg tracker is the entire source of the edge.** On its own it moves E[R] from −0.013 to
+   +0.030 and t from −1.9 to +3.4; the BE-intact gate does nothing on its own. This was invisible
+   before: the tracker's pivots were a 3-bar rolling minimum, which fires on a third of all bars, so
+   every live gap was discarded before it could reach the 7-bar minimum inversion age — the arm
+   produced **one trade in ten years**.
+2. **The edge is real but three times too small.** +0.0317 R against a 0.102 R round trip: every arm
+   is net-negative, and the doc's `PF > 1.25` gate is not reachable by tuning. The binding constraint
+   is the cost model versus the size of the effect, not the rule.
+3. **The meta-labeler has no out-of-sample signal.** `auc_test` was 0.47–0.53 across 120 monthly
+   folds. It does *raise* the reference arm's gross expectancy (+0.0317 → +0.0511 R) by selecting the
+   better setups, but on 705 trades that is no longer significant.
+
+Full report with every figure parsed from the executed output:
+[research/audit/PHASE1_REPORT.md](research/audit/PHASE1_REPORT.md).
+
+---
+
+## Earlier findings
 
 **The first falsification test found no edge.** On **2,046,240 real BTCUSDT 1-minute bars**
 (2023-01-01 → 2026-11-21, gap-free), with **one position at a time**:
@@ -82,15 +120,26 @@ sudo mount -t nfs -o rw,vers=3,proto=tcp fnos2.local:/fs/1000/nfs ~/iflow_lake
 |---|---|---|
 | BTCUSDT | 2,046,240 bars, 2023-01-01 → 2026-11-21, 0 gaps | 15m from 2024-01; `bar_ofi` 1m from 2023-01 |
 | ETHUSDT | 2,046,240 bars, 2023-01-01 → 2026-11-21, 0 gaps | 15m from 2020-01 |
-| NQ / ES / GC | 7,490 / 7,489 / 7,714 bars — **one week only** | 1h from 2024-05; 1d from 2021-10 |
+| **NQ** | **3,664,241 bars, 2015-01-01 → 2025-07-25** (Hugging Face) | 1h from 2024-05; 1d from 2021-10 |
+| **ES** | **646,948 bars, 2020-11-17 → 2024-07-19** (Hugging Face, 55 % weekday coverage) | 1h from 2024-05; 1d from 2021-10 |
+| GC | 7,714 bars — **one week only** | 1h from 2024-05; 1d from 2021-10 |
 | QQQ | 2,428 bars | **15m from 2022-10** (73,325 bars) |
 | VXN (CBOE official) | 4,327 daily bars, 2009 → 2026 | — |
 | Funding rate (BTC/ETH) | 4,200 prints each | — |
 
-**The binding constraint on this project is data, not models.** Multi-year NQ/ES 1-minute history
-requires a paid feed (**Databento**, ~$10–30) — Yahoo serves ~1–2 days of 1-minute from this host,
-cryptohftdata has no candle family, OKX needs ~14,000 requests per symbol, and Twelve Data's lake
-mirror is an *equities* dataset with no NQ/ES at all.
+**Multi-year NQ/ES 1-minute history does *not* require a paid feed.** The earlier claim (that only
+Databento has it) was wrong — it was based on Yahoo, Twelve Data and cryptohftdata. Two Hugging Face
+datasets carry it: `mdelcristo/NQ-F_1min_OHLCV_Parquet` (NQ, one parquet per year, 2015–2025) and
+`Khanhpham1992/es-futures-1m` → `es_continuous_1m.parquet` (ES, with the publisher's `instrument_id`
+per bar). `scripts/fetch_hf_futures_1m.sh` pulls them; `scripts/ingest_futures_1m.py` writes them
+into the lake.
+
+**The continuous series is rolled, and the roll must be handled.** The NQ publisher splices the
+series at the quarterly expiry: at **37 of the 44** expiries in 2015–2025 there is a 1-minute move of
+0.15 %–1.76 % against a 1-minute sigma of 0.030 % (5–58 σ). Those moves are synthetic and are the
+exact shape of a liquidity sweep, so they must not be traded. `scripts/ingest_futures_1m.py`
+**detects** the splice (the largest 1-minute move near each expiry) and flags ±60 minutes around it
+as `roll_masked = 1` — the bars are flagged, not deleted: 0.169 % of NQ, 0.300 % of ES.
 
 ---
 
@@ -122,6 +171,42 @@ $PY research/experiments/e1_rule_falsification.py \
     --data ~/iflow_lake/iflow/database/03_governed_lake/v2_parquet_lake/crypto/futures_um/BTCUSDT/1m/BTCUSDT_1m_consolidated.parquet \
     --cost-r 0.05
 ```
+
+---
+
+## Running phase 1 on NQ
+
+```bash
+PY=/home/da/.local/share/uv/python/cpython-3.11.17-linux-x86_64-gnu/bin/python3.11
+LAKE=~/iflow_lake/iflow/database/03_governed_lake/v2_parquet_lake
+
+# 1. fetch + ingest (the roll splice is detected and flagged, not deleted)
+bash scripts/fetch_hf_futures_1m.sh
+$PY scripts/ingest_futures_1m.py --symbol NQ --root research/hf_futures
+$PY scripts/ingest_futures_1m.py --symbol ES --root research/hf_futures
+
+# 2. audit the stored files against the lake's five mathematical invariants
+$PY scripts/audit_lake_dataset.py --path $LAKE/us_futures/NQ/1m/NQ_1m.parquet
+
+# 3. the rule engine, rule-only (one position at a time)
+$PY -m dodgys_dd_quant.backtest.runner --symbol NQ --timeframe 1m --preset pine \
+    --cost-profile nq --slippage-ticks 1 --inversion-window doc --regime vxn \
+    --reference-symbol ES --no-write-candidates
+
+# 4. the meta-labeler, then the gated walk-forward
+.venv-ml/bin/python -m dodgys_dd_quant.ml_pipeline.train_meta_labeler \
+    --candidates data/candidates/NQ_1m_pine.parquet \
+    --bars $LAKE/us_futures/NQ/1m/NQ_1m.parquet --run-root artifacts_pine
+$PY -m dodgys_dd_quant.backtest.runner --symbol NQ --timeframe 1m --preset pine \
+    --cost-profile nq --slippage-ticks 1 --inversion-window doc --regime vxn \
+    --reference-symbol ES --models-root artifacts_pine --no-write-candidates
+
+# 5. re-render the report from the executed output
+$PY scripts/render_phase1_report.py
+```
+
+The presets are `honest` (the vectorised scanner), `pine` (the reference-faithful leg tracker +
+BE-intact gate), `pine_leg` / `pine_be` (its ablations) and `doc` (the design doc's rules).
 
 ---
 
