@@ -143,8 +143,11 @@ These are measured, not opinions:
     direction in 96.1 %, and the vertical IoU against the **gap interval** has a median of **0.9518**
     with 94.9 % above 0.75. The boxes wrap the **gap**, not the third candle's body. **Never infer
     what a model does — measure it.**
-14. **The detector's *confidence* is a real filter** (win% 35.2 vs 30.7, E[R] +0.055 vs −0.079,
-    two-proportion z = **+2.26**); the IoU itself is uninformative (corr +0.002 with the outcome).
+14. **The detector's *confidence* discriminates on the raw census** (win% 35.2 vs 30.7, E[R] +0.055
+    vs −0.079, two-proportion z = **+2.26**); the IoU itself is uninformative (corr +0.002 with the
+    outcome). **But applied to the portfolio it is redundant with the checklist** — net E[R] falls
+    monotonically from +0.047 to +0.020 as the threshold rises, because both filters detect clean
+    price action. The layer is a geometry cross-check, not an independent signal.
 
 ## Data Lanes — what actually exists (measured 2026-11-23)
 

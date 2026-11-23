@@ -87,9 +87,10 @@ from a *static* reading of the checkpoint, without ever running the model — th
 wrap the third candle's body and that the doc's `IoU > 0.75` gate was unreachable by construction.
 Measured: **336/348** boxes land on a rule-engine FVG's middle bar, the class matches the gap's
 direction in 96.1 %, and the vertical IoU against the **gap interval** has a median of **0.9518**.
-The boxes wrap the *gap*. The **detector's confidence** is then a real filter (win% 35.2 vs 30.7,
-E[R] +0.055 vs −0.079, **z = +2.26**) — the first significant discriminator that is neither the
-session nor the checklist.
+The boxes wrap the *gap*. The **detector's confidence** then discriminates on the raw census
+(win% 35.2 vs 30.7, E[R] +0.055 vs −0.079, **z = +2.26**) — but applied to the portfolio it makes
+the expectancy **monotonically worse** (+0.047 → +0.020), because it is not independent of the
+checklist: both detect clean price action. The layer is a geometry cross-check, not a signal.
 
 Full report with every figure parsed from the executed output:
 [research/audit/PHASE1_REPORT.md](research/audit/PHASE1_REPORT.md).

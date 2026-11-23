@@ -204,6 +204,24 @@ filter                            n     win%    E[R]     z vs the rest
 
 The confidence is used as the filter, not the IoU. The doc's IoU gate is kept as the **geometry check** — it answers "did the model see the same gap?", which it passes 72.6 % of the time — and the confidence answers "was the price action clean?".
 
+### 7.2 …but it adds nothing on top of the checklist
+
+The confidence filter was applied to the **portfolio** — the killzone + checklist arm, with the vision layer's confidence as an extra gate:
+
+| vision confidence ≥ | candidates | trades | win% | E[R] gross | E[R] net | PF_net | t | 95 % CI |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| *none* | 1,991 | 1,528 | 36.4 | **+0.0916** | **+0.0465** | **1.070** | 2.48 | [0.019, 0.164] |
+| 0.30 | 1549 | 1250 | 36.2 | **0.0848** | 0.0411 | 1.062 | 2.08 | [0.005, 0.165] |
+| 0.40 | 1454 | 1182 | 36.1 | **0.0838** | 0.0407 | 1.061 | 2.00 | [0.002, 0.166] |
+| 0.50 | 1319 | 1091 | 35.7 | **0.0697** | 0.0271 | 1.040 | 1.60 | [-0.016, 0.155] |
+| 0.60 | 1087 | 924 | 35.4 | **0.0617** | 0.0201 | 1.030 | 1.31 | [-0.031, 0.154] |
+
+**The vision confidence makes the portfolio monotonically worse.** Net E[R] falls from +0.047 (no vision gate) to +0.041, +0.027 and +0.020 as the threshold rises, and the t-statistic falls from 2.48 to 1.31.
+
+The explanation is that **the vision confidence and the checklist are not independent**: both are detecting *clean price action*. On the raw census, where the checklist is not applied, the confidence is the discriminator (z = +2.26). Once the checklist has already removed the unclean setups, the detector's confidence has nothing left to say — and filtering on it only removes trades.
+
+So the vision layer is **built, mechanically correct, and it works as a geometry cross-check** — but as a *trading filter* it is redundant with the checklist. That is a negative result, and it is the honest one.
+
 
 ## 8. Does it generalise? The configuration on other instruments
 
@@ -253,7 +271,7 @@ The right next step is therefore **not** another filter but a **pre-registered c
 * the **filters** (session, checklist) were selected on NQ and do not carry to another instrument;
 * **no configuration survives the multiple-testing correction** on the sample it was selected on.
 
-The vision layer is **built and it works**, and it is the one filter with significant discriminating power that is neither the session nor the checklist: the detector's confidence (z = +2.26, §7). It has not yet been run over the *traded* set, so its effect on the portfolio expectancy is still unmeasured — and because the confidence threshold was picked from four candidates, it carries its own selection risk.
+The vision layer is **built and it works** — mechanically correct, and it **corrects a wrong audit**: the doc's `IoU > 0.75` gate is reachable (the median IoU against the gap interval is 0.95). But as a *trading filter* it is **redundant with the checklist**: applied to the portfolio it makes the expectancy monotonically worse (§7.2). It is a geometry cross-check, not an independent signal.
 
 
 ## 10. What would move the number
@@ -265,7 +283,7 @@ The vision layer is **built and it works**, and it is the one filter with signif
 | the payoff | nothing (±0.008 R across 1:1 → 1:4) | **measured, exhausted** |
 | a wider stop | destroys the edge | **measured, exhausted** |
 | the doc's mandatory sweep precondition | gross E[R] +0.106, trades halved | **done** — DSR p 0.574 |
-| the vision layer's detector confidence | win% 35.2 vs 30.7, E[R] +0.055 vs −0.079, **z = +2.26** | **built** — §7; the effect on the portfolio expectancy is not yet measured |
+| the vision layer's detector confidence | z = +2.26 on the raw census, but net E[R] +0.047 → +0.020 on the portfolio | **built and measured** — §7; redundant with the checklist |
 | the meta-labeler | raises gross E[R] but AUC 0.47–0.53 | **measured, exhausted** on the current features |
 | the same configuration on another instrument | BTCUSDT +0.038 R (t = 3.38) — the edge replicates; ES −0.140 R | **done** — the edge generalises, the filters do not |
 

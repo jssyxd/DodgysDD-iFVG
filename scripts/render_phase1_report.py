@@ -386,6 +386,40 @@ def main() -> int:
                  "gap?\", which it passes 72.6 % of the time — and the confidence answers "
                  "\"was the price action clean?\".\n")
 
+        vpf = parse_sections("PHASE1_NQ_VISION_PORTFOLIO.txt")
+        if vpf:
+            L.append("### 7.2 …but it adds nothing on top of the checklist\n")
+            L.append("The confidence filter was applied to the **portfolio** — the "
+                     "killzone + checklist arm, with the vision layer's confidence as an "
+                     "extra gate:\n")
+            L.append(row(["vision confidence ≥", "candidates", "trades", "win%", "E[R] gross",
+                          "E[R] net", "PF_net", "t", "95 % CI"]))
+            L.append(row(["---"] * 9))
+            L.append(row(["*none*", "1,991", "1,528", "36.4", "**+0.0916**", "**+0.0465**",
+                          "**1.070**", "2.48", "[0.019, 0.164]"]))
+            for r in vpf:
+                if "er" not in r:
+                    continue
+                mm = re.search(r"confidence >= ([\d.]+)", r["label"])
+                conf = mm.group(1) if mm else "?"
+                L.append(row([conf, r.get("candidates", "?"), r["n"], r["win"],
+                              f"**{r['er']}**", r["enet"], r.get("pfnet", "?"), r["t"],
+                              f"[{r['lo']}, {r['hi']}]"]))
+            L.append("\n**The vision confidence makes the portfolio monotonically "
+                     "worse.** Net E[R] falls from +0.047 (no vision gate) to +0.041, "
+                     "+0.027 and +0.020 as the threshold rises, and the t-statistic falls "
+                     "from 2.48 to 1.31.\n")
+            L.append("The explanation is that **the vision confidence and the checklist are "
+                     "not independent**: both are detecting *clean price action*. On the raw "
+                     "census, where the checklist is not applied, the confidence is the "
+                     "discriminator (z = +2.26). Once the checklist has already removed the "
+                     "unclean setups, the detector's confidence has nothing left to say — and "
+                     "filtering on it only removes trades.\n")
+            L.append("So the vision layer is **built, mechanically correct, and it works as "
+                     "a geometry cross-check** — but as a *trading filter* it is redundant "
+                     "with the checklist. That is a negative result, and it is the honest "
+                     "one.\n")
+
     # --------------------------------------------------- generalisation
     oos = parse_sections("PHASE1_OOS_OTHER_INSTRUMENTS.txt")
     if oos:
@@ -458,12 +492,12 @@ def main() -> int:
              "another instrument;\n"
              "* **no configuration survives the multiple-testing correction** on the sample it "
              "was selected on.\n")
-    L.append("The vision layer is **built and it works**, and it is the one filter with "
-             "significant discriminating power that is neither the session nor the "
-             "checklist: the detector's confidence (z = +2.26, §7). It has not yet been run "
-             "over the *traded* set, so its effect on the portfolio expectancy is still "
-             "unmeasured — and because the confidence threshold was picked from four "
-             "candidates, it carries its own selection risk.\n")
+    L.append("The vision layer is **built and it works** — mechanically correct, and it "
+             "**corrects a wrong audit**: the doc's `IoU > 0.75` gate is reachable (the "
+             "median IoU against the gap interval is 0.95). But as a *trading filter* it is "
+             "**redundant with the checklist**: applied to the portfolio it makes the "
+             "expectancy monotonically worse (§7.2). It is a geometry cross-check, not an "
+             "independent signal.\n")
 
     # --------------------------------------------------- what moves the number
     L.append("\n## 10. What would move the number\n")
@@ -478,8 +512,9 @@ def main() -> int:
     L.append(row(["the doc's mandatory sweep precondition", "gross E[R] +0.106, trades halved",
                   "**done** — DSR p 0.574"]))
     L.append(row(["the vision layer's detector confidence",
-                   "win% 35.2 vs 30.7, E[R] +0.055 vs −0.079, **z = +2.26**",
-                  "**built** — §7; the effect on the portfolio expectancy is not yet measured"]))
+                   "z = +2.26 on the raw census, but net E[R] +0.047 → +0.020 on the "
+                   "portfolio",
+                   "**built and measured** — §7; redundant with the checklist"]))
     L.append(row(["the meta-labeler", "raises gross E[R] but AUC 0.47–0.53",
                   "**measured, exhausted** on the current features"]))
     L.append(row(["the same configuration on another instrument",

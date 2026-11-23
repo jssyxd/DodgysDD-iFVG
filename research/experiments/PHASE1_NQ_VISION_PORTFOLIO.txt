@@ -1,0 +1,29 @@
+===== killzone + checklist>=3 (known>=4) + vision confidence >= 0.30 =====
+vision filter: confidence >= 0.3 -> 1549/1991 candidates traded
+PORTFOLIO (1 at a time, drop)    n=1250    win%= 36.2  E[R]=  0.0848  E_net=  0.0411  PF= 1.133  t=  2.08  CI95=[0.005,0.165]
+                                 mean cost=0.0437 R   break-even cost=0.0848 R   PF_net=1.062   total R=106.00   max consec losses=12
+                                 mean cost=0.0437 R   break-even cost=0.0848 R   PF_net=1.062   total R=106.00   max consec losses=12
+candidates=1549  approved=1549  trades=1250
+Sharpe (per trade) = 0.0588   deflated Sharpe = 0.4198   DSR p-value = 0.5802   trials = 50
+===== killzone + checklist>=3 (known>=4) + vision confidence >= 0.40 =====
+vision filter: confidence >= 0.4 -> 1454/1991 candidates traded
+PORTFOLIO (1 at a time, drop)    n=1182    win%= 36.1  E[R]=  0.0838  E_net=  0.0407  PF= 1.131  t=  2.00  CI95=[0.002,0.166]
+                                 mean cost=0.0431 R   break-even cost=0.0838 R   PF_net=1.061   total R=99.00   max consec losses=13
+                                 mean cost=0.0431 R   break-even cost=0.0838 R   PF_net=1.061   total R=99.00   max consec losses=13
+candidates=1454  approved=1454  trades=1182
+Sharpe (per trade) = 0.0581   deflated Sharpe = 0.3876   DSR p-value = 0.6124   trials = 50
+===== killzone + checklist>=3 (known>=4) + vision confidence >= 0.50 =====
+vision filter: confidence >= 0.5 -> 1319/1991 candidates traded
+PORTFOLIO (1 at a time, drop)    n=1091    win%= 35.7  E[R]=  0.0697  E_net=  0.0271  PF= 1.108  t=  1.60  CI95=[-0.016,0.155]
+                                 mean cost=0.0425 R   break-even cost=0.0697 R   PF_net=1.040   total R=76.00   max consec losses=13
+                                 mean cost=0.0425 R   break-even cost=0.0697 R   PF_net=1.040   total R=76.00   max consec losses=13
+candidates=1319  approved=1319  trades=1091
+Sharpe (per trade) = 0.0485   deflated Sharpe = 0.2461   DSR p-value = 0.7539   trials = 50
+===== killzone + checklist>=3 (known>=4) + vision confidence >= 0.60 =====
+vision filter: confidence >= 0.6 -> 1087/1991 candidates traded
+PORTFOLIO (1 at a time, drop)    n=924     win%= 35.4  E[R]=  0.0617  E_net=  0.0201  PF= 1.095  t=  1.31  CI95=[-0.031,0.154]
+                                 mean cost=0.0416 R   break-even cost=0.0617 R   PF_net=1.030   total R=57.00   max consec losses=13
+                                 mean cost=0.0416 R   break-even cost=0.0617 R   PF_net=1.030   total R=57.00   max consec losses=13
+candidates=1087  approved=1087  trades=924
+Sharpe (per trade) = 0.0430   deflated Sharpe = 0.1627   DSR p-value = 0.8373   trials = 50
+VISION PORTFOLIO DONE
