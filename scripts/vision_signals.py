@@ -56,6 +56,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tau-v", type=float, default=0.75,
                     help="the doc's vertical IoU gate (iFVG几个模型的讨论.txt L279)")
     ap.add_argument("--conf", type=float, default=0.25)
+    ap.add_argument("--skip-existing", default=None,
+                    help="an earlier signal parquet; rows whose (fvg_bar3, confirm_bar) "
+                         "is already scored there are skipped. The vision score depends "
+                         "only on that key and the bars, so a cached value stays valid "
+                         "even when the candidate set changes.")
     args = ap.parse_args(argv)
 
     cand = pq.read_table(args.candidates)
@@ -74,14 +79,25 @@ def main(argv: list[str] | None = None) -> int:
     fvg_type = cand.column("side").to_numpy()      # the trade side = -gap direction
     confirm = cand.column("confirm_bar").to_numpy()
 
+    done: set = set()
+    if args.skip_existing:
+        prev = pq.read_table(args.skip_existing)
+        done = {(int(g), int(c)) for g, c in zip(prev.column("fvg_bar3").to_numpy(),
+                                                 prev.column("confirm_bar").to_numpy())}
+        print(f"skip-existing: {len(done):,} keys already scored")
+
     n = len(ts_event)
     order = np.arange(args.offset, min(n, args.offset + args.limit) if args.limit else n,
                      step=args.stride)
 
     rows = []
     t0 = time.time()
+    skipped = 0
     for i in order:
         i3 = int(fvg_bar3[i])
+        if done and (i3, int(confirm[i])) in done:
+            skipped += 1
+            continue
         i1 = int(fvg_bar1[i])
         start = i3 - WINDOW_BARS + 1
         if start < 0:
@@ -131,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     det_rate = float(np.mean([r["vision_detected"] for r in rows]))
     pass_rate = float(np.mean([r["vision_pass"] for r in rows]))
     ious = [r["vision_iou"] for r in rows if r["vision_detected"]]
-    print(f"[SAVED] {out} ({len(rows)} rows)")
+    print(f"[SAVED] {out} ({len(rows)} rows, {skipped:,} skipped as already scored)")
     print(f"  a box landed on the gap's bars         : {det_rate:.1%}")
     print(f"  class == the gap's direction           : "
           f"{float(np.mean([r['vision_class_ok'] for r in rows if r['vision_detected']])):.1%}"
