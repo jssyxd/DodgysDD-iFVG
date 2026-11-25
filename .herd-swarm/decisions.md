@@ -282,3 +282,25 @@ BE-intact gate, no checklist, no grade, and the sweep levels are not consumed on
 
 **Also fixed.** The doc's "A/A+" gate has no implementable definition (D8) → the checklist becomes five
 named booleans whose sum is `checklist_score`, **reported, never filtered on**.
+
+## 2026-11-24 — Nautilus Strategy port (doc module #5)
+
+**D1 — the strategy consumes a precomputed candidate feed.** The rule engine is a pure function of the
+whole bar history; calling it per event is O(history) per bar. The Nautilus strategy therefore consumes
+the engine's D2 candidate log (or the archive) at each confirmation bar's close and owns execution,
+position accounting and the export. Parity is defined on the candidate set and the fill prices, not on
+re-implementing the rules.
+
+**D2 — map only the execution-relevant switches**: inversion window, sweep gate, HTF alignment,
+break-even exit, setup-history cap, candidate cap, direction bias, killzone-as-alert (never a gate),
+fixed RR. `hideLosing` has no counterpart (INV4 forbids erasing a signal).
+
+**D3 — ownership for the (deferred) swarm**: feed → `strategy/custom_data.py` + test; catalog →
+`data_pipeline/catalog_builder.py` + test; mapping → `research/nautilus/PINE_TO_NAUTILUS.md`; strategy →
+`strategy/dodgys_strategy.py` + test; runner → `backtest/nautilus_runner.py` + test; parity →
+`tests/integration/test_nautilus_port.py`. Briefs live in `.herd-dispatch/jobs/` (gitignored).
+
+Blocker for the swarm: `herd-dispatch assign` fails with `timed out waiting for agent startup` and
+`watch` reports `herdr agent list` unavailable, so the captain implemented wave 1–2 itself. Measured
+parity on a 2,000-bar BTCUSDT 30m slice: 240 candidates → 52 brackets → **49 positions**, the same 49
+as the engine's one-position portfolio.

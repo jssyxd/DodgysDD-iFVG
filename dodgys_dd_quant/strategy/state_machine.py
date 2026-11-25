@@ -34,6 +34,7 @@ window is ``[1, 15]`` — age 0 is arithmetically impossible (L2 §A.5).
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable
@@ -42,6 +43,7 @@ import numpy as np
 
 from dodgys_dd_quant.strategy.constants import (
     CHECKLIST_WEIGHTS,
+    LABEL_HORIZON_BARS,
     DECISION_THRESHOLD,
     DEFAULT_RR,
     DOC_INVERSION_MAX_BARS,
@@ -54,16 +56,19 @@ from dodgys_dd_quant.strategy.constants import (
     KILLZONE_NY_AM,
     KILLZONE_NY_PM,
     LIQUIDITY_TARGET_MIN_R,
+    MAX_TRACKED_SETUPS,
     MIN_GAP_ATR_MULT,
     NY_TZ,
     SWING_FRACTAL,
     SWING_RIGHT_BARS,
 )
+from dodgys_dd_quant.strategy.regime import regime_parameters
 from dodgys_dd_quant.strategy.structure import (
     Bars,
     PivotLevels,
     SweepDetector,
     SweepEvent,
+    aggregate_htf,
     atr_wilder,
     causal_pivots,
     detect_fvg,
@@ -109,6 +114,23 @@ class RuleConfig:
     #: The reference's ``onlyShowSweptIFVG`` defaults to **false**; the doc
     #: makes the sweep a mandatory precondition.
     require_sweep: bool = False
+    #: Which sweep **object** the engine uses.
+    #:
+    #: ``"swings"``       the code-derived detector: the same timeframe, a
+    #:                   five-bar fractal, an added body-reclaim condition and
+    #:                   no consumption of the reference's level set (L2 D-06).
+    #: ``"htf_fractal"``  the reference's own object: the levels are the
+    #:                   three-bar fractals of the **hand-aggregated HTF
+    #:                   series**, the pierce is strict (no body reclaim) and
+    #:                   every pierced level is consumed once
+    #:                   (``pine:L544-630``).
+    sweep_source: str = "swings"
+    #: The HTF timeframe of the reference's sweep detector and of the
+    #: confluence gate (``autoHTF()``: 1m -> 15m, ``pine:L544-552``).
+    htf_timeframe_minutes: int = 15
+    #: The reference's ``onlyShowHtfAlignedIFVG`` (default **false**): the
+    #: setup must overlap an **unreclaimed HTF FVG zone** (``pine:L635-647``).
+    require_htf_alignment: bool = False
     #: The doc's sweep semantics: the wick pierces the level **and** the body
     #: closes back inside.  The reference only tests the wick (``pine:L567``).
     sweep_requires_body_reclaim: bool = True
@@ -132,10 +154,6 @@ class RuleConfig:
 
     # --- risk -------------------------------------------------------------
     rr: float = DEFAULT_RR
-    #: The stop is moved away from the entry by this factor.  A trade costs a
-    #: fixed number of dollars, so a wider stop lowers the cost **in R** — the
-    #: only lever that touches the cost ratio directly.
-    stop_mult: float = 1.0
 
     # --- context gates ----------------------------------------------------
     #: The doc's killzone is a hard gate; the reference's sessions gate alerts
@@ -168,10 +186,48 @@ class RuleConfig:
     # --- meta-label -------------------------------------------------------
     decision_threshold: float = DECISION_THRESHOLD
 
+    # --- the label horizon ------------------------------------------------
+    #: The maximum holding period, in **bars of the scanned series**.  The
+    #: default is the project constant (240).  A caller that wants a *time*
+    #: horizon derives the bar count from its bar interval, so "8 hours" means
+    #: the same duration at 1m, 5m and 15m instead of 240 bars of each.
+    horizon_bars: int = LABEL_HORIZON_BARS
+
     # --- references -------------------------------------------------------
     #: Symbol of the SMT reference instrument; ``None`` disables the check and
     #: records ``smt_divergence = -1`` (never guesses).
     smt_reference_symbol: str | None = None
+
+    # --- roll boundary ----------------------------------------------------
+    #: A contract roll leaves a **price gap** that the rule engine would read
+    #: as a liquidity sweep (Q5: "a roll gap can fake a liquidity sweep").
+    #: ``None`` disables the guard -- the crypto lane has no rolls -- and a
+    #: value is the relative jump that counts as one.
+    roll_gap_frac: float | None = None
+    #: How many bars around a roll boundary are excluded.
+    roll_bars_around: int = 2
+
+    # --- the break-even exit ----------------------------------------------
+    #: The reference closes a trade at the **leg's origin** (its "B.E." exit,
+    #: ``pine:L476-491``).  The code-derived arm (E-1) and the doc have no such
+    #: exit, so it is **off** by default and the honest arm keeps its E-1
+    #: parity; the reference-faithful ``pine`` preset turns it on.
+    resolve_break_even: bool = False
+
+    # --- setup history ----------------------------------------------------
+    #: The reference keeps only the last ``setupHistory`` setups (default 2)
+    #: and an evicted, still unresolved setup **stops being managed**
+    #: (``pine:L13``, ``pine:L482-495``).  ``0`` disables the cap, so every
+    #: setup is managed to its end -- the code-derived behaviour and the safer
+    #: one (L2 row 28, audit D-11).
+    setup_history_cap: int = 0
+
+    # --- swing origin -----------------------------------------------------
+    #: The reference's origin sits one bar *before* the extreme it names
+    #: (``pine:L369``: ``originBar = bar_index - 1``); the port reconciles the
+    #: two readings by using the extreme itself.  ``-1`` restores the
+    #: reference's literal bar index (the price is unchanged either way).
+    origin_bar_offset: int = 0
 
     # --- session bookkeeping ---------------------------------------------
     #: Timezone used for the PDH/PDL day boundary and the killzone tests.
@@ -224,6 +280,7 @@ PRESETS: dict[str, RuleConfig] = {
         require_sweep=False,
         leg_tracker=True,
         require_be_intact=True,
+        resolve_break_even=True,
     ),
     # The doc's rules: ATR floor, sweep precondition, killzone.
     "doc": RuleConfig(
@@ -233,26 +290,6 @@ PRESETS: dict[str, RuleConfig] = {
         portfolio_mode="drop",
         require_sweep=True,
         killzone_gate=True,
-    ),
-    # Ablations of the reference-faithful arm: each keeps one of its two
-    # reference features so the contribution of each can be measured.
-    "pine_leg": RuleConfig(
-        min_gap_atr_mult=None,
-        stop_window="confirm",
-        entry_fill="next_open",
-        portfolio_mode="drop",
-        require_sweep=False,
-        leg_tracker=True,
-        require_be_intact=False,
-    ),
-    "pine_be": RuleConfig(
-        min_gap_atr_mult=None,
-        stop_window="confirm",
-        entry_fill="next_open",
-        portfolio_mode="drop",
-        require_sweep=False,
-        leg_tracker=False,
-        require_be_intact=True,
     ),
 }
 
@@ -288,12 +325,6 @@ class Candidate:
     bars_to_inversion: int = 0
     minutes_from_us_open: int = 0
     checklist_score: float = 0.0
-    #: How many of the checklist's conditions could actually be **decided**
-    #: for this candidate.  ``smt_divergence`` is undecidable where the
-    #: reference instrument does not cover the window and the VXN regime is
-    #: undecidable when no regime series is attached; the vision condition is
-    #: never decidable because the layer does not exist (D12).
-    checklist_known: int = 0
     checklist_flags: dict[str, bool] = field(default_factory=dict)
     smt_divergence: int = -1
     sweep_detected: int = 0
@@ -301,14 +332,53 @@ class Candidate:
     vxn_regime: int = -1
     origin_bar: int = -1
     origin_price: float = float("nan")
-    outcome: str = "open"      # "stop" | "target" | "open" | "expired" | "discarded"
+    #: The reference's **break-even level** (``pine:L476``): the swing origin
+    #: of the leg that produced the gap.  ``NaN`` when the leg has no known
+    #: pivot yet.
+    be_price: float = float("nan")
+    #: The bar at which the price first reached ``be_price`` after the fill,
+    #: ``-1`` when it never did inside the label horizon.
+    be_hit_bar: int = -1
+    #: The **next liquidity pool** at least ``LIQUIDITY_TARGET_MIN_R`` R away
+    #: in the trade's direction (the doc's target definition).  ``NaN`` when no
+    #: such pool exists.
+    liquidity_target_price: float = float("nan")
+    #: The vision layer's verdict on this candidate, filled by the **offline**
+    #: batch (``vision_validator.batch``): the 2-D body IoU and the detector's
+    #: confidence.  ``NaN`` until the batch has run -- the D2 schema keeps
+    #: both columns, the engine never fills them (D12).
+    vision_iou: float = float("nan")
+    vision_confidence: float = float("nan")
+    #: Whether a liquidity sweep of the tracker side happened between the
+    #: leg's origin pivot and the confirmation bar (the reference's ``swept``
+    #: flag, ``pine:L246-259``).
+    sweep_since_origin: bool = False
+    #: Whether the reference's per-direction tracking array dropped this
+    #: candidate's gap (``MAX_TRACKED_SETUPS``, L2 row 29).  The reference
+    #: drops it silently; the port records it and keeps the row.
+    dropped_by_cap: bool = False
+    #: Whether the cap dropped the gap **before** it could trigger -- the
+    #: reference's "it can never trigger" case.  Such a setup is logged but
+    #: never traded.
+    never_tradable: bool = False
+    #: The regime band's risk multiplier (L109: the high-volatility band
+    #: halves the risk per trade).  1.0 when no regime is attached.
+    risk_multiplier: float = 1.0
+    outcome: str = "open"      # "stop" | "target" | "break_even" | "open" | "expired" | "discarded"
     r_multiple: float = float("nan")
     exit_bar: int = -1
     p_win: float = float("nan")
+    #: The meta-label gate's decision for this candidate (``False`` when no
+    #: model ran).  Kept on the object so the archive records the *decision*
+    #: rather than reconstructing it from a threshold after the fact.
+    gate_approved: bool = False
 
     @property
     def is_closed(self) -> bool:
-        return self.outcome in ("stop", "target")
+        # A break-even exit is a **closed** trade: the reference closes the
+        # position at the leg's origin, so the portfolio must carry its exit
+        # bar and its realised multiple.
+        return self.outcome in ("stop", "target", "break_even")
 
     @property
     def grade(self) -> str:
@@ -402,10 +472,15 @@ class CandidateLog:
             "sweep_detected": np.array([c.sweep_detected for c in cands], dtype=np.int8),
             "vxn_known": np.array([c.vxn_known for c in cands], dtype=np.float64),
             "vxn_regime": np.array([c.vxn_regime for c in cands], dtype=np.int8),
-            # The vision layer does not exist (D12); the columns stay in the
-            # schema and are filled with NaN.
-            "vision_iou": np.full(n, np.nan, dtype=np.float64),
-            "vision_confidence": np.full(n, np.nan, dtype=np.float64),
+            # The vision columns are filled by the **offline** batch
+            # (``vision_validator.batch``); the engine never renders or runs
+            # a detector, so they stay NaN until that pass has run (D12).
+            "vision_iou": np.asarray(
+                [c.vision_iou for c in cands], dtype=np.float64
+            ),
+            "vision_confidence": np.asarray(
+                [c.vision_confidence for c in cands], dtype=np.float64
+            ),
             "label": label,
             "r_multiple": np.array([c.r_multiple for c in cands], dtype=np.float64),
         }
@@ -452,38 +527,113 @@ def run_state_machine(
     if n < 3:
         return CandidateLog([], config.symbol, config.timeframe)
 
+    # --- the regime, resolved once -----------------------------------------
+    # The regime must reach the *decision*, not just a feature column: it
+    # selects the target distance, the gap filter's ATR floor and the risk
+    # per trade (L107-109).  When no regime index is attached the config's
+    # own values stand, which is what the code-derived baseline does.
+    regime_levels = None
+    regime_labels = None
+    if regime is not None:
+        regime_levels, regime_labels = regime.value_at(bars.ts)
+
     atr = atr_wilder(bars.high, bars.low, bars.close)
-    fvgs = detect_fvg(bars, atr, config.min_gap_atr_mult)
+    gap_floor = _regime_atr_floor(config, regime_labels)
+    fvgs = detect_fvg(bars, atr, gap_floor)
     pivots = causal_pivots(bars.high, bars.low, left=SWING_FRACTAL - 1, right=SWING_RIGHT_BARS)
-    origins = _origin_series(bars, pivots)
+    origins = _origin_series(bars, pivots, config.origin_bar_offset)
 
     minutes = local_minutes_of_day(bars.close_ts(), config.session_timezone)
     extremes = session_extremes(bars.ts, bars.high, bars.low, config.session_timezone)
-    sweeps = _sweep_events(bars, pivots, config)
+    htf = None
+    if config.sweep_source == "htf_fractal" or config.require_htf_alignment:
+        htf = aggregate_htf(bars, config.htf_timeframe_minutes)
+
+    # --- the roll boundary (Q5) -------------------------------------------
+    roll_excluded: set[int] = set()
+    if config.roll_gap_frac is not None:
+        roll_excluded = _roll_boundary_bars(
+            bars, config.roll_gap_frac, config.roll_bars_around
+        )
+
+    sweeps = _sweep_events(bars, pivots, config, htf)
+    if roll_excluded:
+        # a roll gap must not be read as a liquidity sweep
+        sweeps = [ev for ev in sweeps if ev.bar not in roll_excluded]
     sweep_flags = np.zeros(n, dtype=bool)
     for ev in sweeps:
         sweep_flags[ev.bar] = True
+    # Sweep bars per pierced side, sorted: the reference's ``swept`` flag is
+    # set by a sweep of the **tracker's** side (``pine:L246-259``).
+    sweep_bars: dict[int, np.ndarray] = {}
+    for direction in (1, -1):
+        bars_of_side = np.array(
+            sorted(ev.bar for ev in sweeps if ev.direction == direction), dtype=np.int64
+        )
+        sweep_bars[direction] = bars_of_side
 
-    # The bar gate (the doc's killzone and the sweep precondition) applies to
-    # **both** scanning paths.  It used to be built only for the vectorised
-    # scanner, so ``killzone_gate`` was silently ignored by the leg tracker
-    # and the doc's session rule had no effect on the reference-faithful arm.
-    gate = _bar_gates(config, minutes, sweep_flags)
     if config.leg_tracker:
-        confirmations = _leg_confirmations(bars, fvgs, config, sweep_flags, pivots, gate)
+        confirmations = _leg_confirmations(bars, fvgs, config, sweep_flags)
     else:
+        gate = _bar_gates(config, minutes, sweep_flags)
         confirmations = _scan_confirmations(bars, fvgs, config, gate)
 
+    if roll_excluded:
+        confirmations = [
+            conf for conf in confirmations if conf.confirm_bar not in roll_excluded
+        ]
+
+    # The reference's per-direction candidate cap (L2 row 29): the drops are
+    # recorded on the candidates instead of being silently swallowed.
+    evicted, never_tradable = _candidate_cap_drops(fvgs, confirmations, config)
+
     candidates = _build_candidates(
-        bars, fvgs, confirmations, config, origins, minutes, extremes, sweep_flags,
-        pivots,
+        bars,
+        fvgs,
+        confirmations,
+        config,
+        origins,
+        minutes,
+        extremes,
+        sweep_flags,
+        regime_labels=regime_labels,
+        sweep_bars=sweep_bars,
+        evicted=evicted,
+        never_tradable=never_tradable,
+        htf=htf,
     )
     _attach_checklist(candidates, bars, pivots, extremes, atr, config)
     _attach_smt(candidates, bars, reference, config)
-    _attach_regime(candidates, bars, regime)
-    _score_checklist(candidates)
+    _attach_regime(candidates, bars, regime, levels=regime_levels, labels=regime_labels)
     _resolve_outcomes(candidates, bars, config)
+    if config.setup_history_cap > 0:
+        _apply_setup_history_cap(candidates, config.setup_history_cap)
     return CandidateLog(candidates, config.symbol, config.timeframe)
+
+
+def _regime_atr_floor(config: RuleConfig, regime_labels) -> object:
+    """The gap filter's ATR floor, per candle.
+
+    Without a regime the config's own floor stands.  With one, the regime
+    band decides: the doc raises the floor in the high-volatility band and
+    tightens it in the low one (L107-109).
+    """
+    if regime_labels is None:
+        return config.min_gap_atr_mult
+    floor = np.full(len(regime_labels), np.nan, dtype=np.float64)
+    for label in np.unique(regime_labels):
+        if label < 0:
+            continue
+        params = regime_parameters(int(label))
+        floor[regime_labels == label] = params.atr_floor_mult
+    if not np.isfinite(floor).any():
+        return config.min_gap_atr_mult
+    # A bar with no regime keeps the config's floor.
+    fallback = config.min_gap_atr_mult
+    if fallback is None:
+        fallback = 0.0
+    floor = np.where(np.isfinite(floor), floor, float(fallback))
+    return floor
 
 
 # ---------------------------------------------------------------------------
@@ -562,38 +712,11 @@ def _scan_confirmations(
     return out
 
 
-def _pivot_track(
-    idx: np.ndarray, known: np.ndarray, price_src: np.ndarray, n: int
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """The causal swing pivot of one direction, in force at every bar.
-
-    Returns ``(origin_bar, origin_price, is_new)``: the bar index and price of
-    the most recent pivot that was already *knowable* at each bar, and a flag
-    that marks the bar on which a new pivot became known.
-
-    A pivot at bar ``p`` is only knowable at bar ``p + SWING_RIGHT_BARS`` (see
-    :func:`causal_pivots`), so the track never looks ahead.
-    """
-    origin_bar = np.full(n, -1, dtype=np.int64)
-    origin_price = np.full(n, np.nan, dtype=np.float64)
-    is_new = np.zeros(n, dtype=bool)
-    if idx.shape[0]:
-        pos = np.searchsorted(known, np.arange(n), side="right") - 1
-        ok = pos >= 0
-        origin_bar[ok] = idx[pos[ok]]
-        origin_price[ok] = price_src[idx[pos[ok]]]
-        conf = known[known < n]
-        is_new[conf] = True
-    return origin_bar, origin_price, is_new
-
-
 def _leg_confirmations(
     bars: Bars,
     fvgs,
     config: RuleConfig,
     sweep_flags: np.ndarray,
-    pivots: PivotLevels,
-    gate: np.ndarray | None = None,
 ) -> list[_Confirmation]:
     """The reference's leg tracker (R1-R5): one live candidate per direction.
 
@@ -605,25 +728,11 @@ def _leg_confirmations(
     markedly slower than the vectorised scanner.  The reference's ``Series``
     mode (merging consecutive gaps into one growing zone) is **not**
     implemented; only ``Single`` is supported.
-
-    The leg boundaries are the module's own **fractal** pivots
-    (:func:`causal_pivots`), the same definition the origin tracker uses.  An
-    earlier revision used a 3-bar rolling minimum as the "pivot", which fires
-    on roughly a third of all bars: the live gap was then discarded long
-    before it could reach the 7-bar minimum inversion age, and the whole
-    reference-faithful arm collapsed to a single trade over ten years.
     """
     n = len(bars)
     high_l = bars.high.tolist()
     low_l = bars.low.tolist()
     close_l = bars.close.tolist()
-
-    low_bar, low_price, low_new = _pivot_track(
-        pivots.low_idx, pivots.low_known, bars.low, n
-    )
-    high_bar, high_price, high_new = _pivot_track(
-        pivots.high_idx, pivots.high_known, bars.high, n
-    )
 
     # at most one gap per bar (the geometry is strict and mutually exclusive)
     fvg_at = np.full(n, -1, dtype=np.int64)
@@ -638,16 +747,6 @@ def _leg_confirmations(
     max_age = max(min_age, config.inversion_max_bars)
 
     for fvg_type in (1, -1):
-        # the leg's origin is the swing pivot of the same sense as the gap:
-        # a bullish gap starts at a swing low, a bearish gap at a swing high.
-        # The opposing pivot freezes the leg until its price is taken out.
-        if fvg_type > 0:
-            orig_bar_arr, orig_price_arr, orig_new = low_bar, low_price, low_new
-            opp_price_arr, opp_new = high_price, high_new
-        else:
-            orig_bar_arr, orig_price_arr, orig_new = high_bar, high_price, high_new
-            opp_price_arr, opp_new = low_price, low_new
-
         origin_bar = -1
         origin_price = math.nan
         frozen = False
@@ -661,11 +760,18 @@ def _leg_confirmations(
             a = k - 3
 
             # --- the leg's own pivot resets the state -----------------------
-            # the pivot fires when a *fractal* swing pivot of the origin sense
-            # becomes knowable (bar p + SWING_RIGHT_BARS)
-            if orig_new[k]:
-                origin_bar = int(orig_bar_arr[k])
-                origin_price = float(orig_price_arr[k])
+            # the pivot fires when bar k is the extreme of the last 3 bars
+            window_low = min(low_l[k - 2], low_l[k - 1], low_l[k])
+            window_high = max(high_l[k - 2], high_l[k - 1], high_l[k])
+            pivot_origin = fvg_type > 0 and low_l[k] <= window_low
+            pivot_opp = fvg_type > 0 and high_l[k] >= window_high
+            if fvg_type < 0:
+                pivot_origin = high_l[k] >= window_high
+                pivot_opp = low_l[k] <= window_low
+
+            if pivot_origin:
+                origin_bar = k
+                origin_price = low_l[k] if fvg_type > 0 else high_l[k]
                 frozen = False
                 frozen_price = math.nan
                 freeze_bar = -1
@@ -705,10 +811,7 @@ def _leg_confirmations(
                                 live = i
 
                 # --- trigger test ------------------------------------------
-                # The bar gate applies to the **confirmation bar**, exactly as
-                # in the vectorised scanner: the doc's killzone and the sweep
-                # precondition decide whether a setup may be taken.
-                if live >= 0 and not confirmed and (gate is None or gate[c]):
+                if live >= 0 and not confirmed:
                     age = c - int(fvgs.newest[live])
                     if min_age <= age <= max_age:
                         far = (
@@ -723,9 +826,9 @@ def _leg_confirmations(
                             confirmed = True
                             out.append(_Confirmation(fvg_index=int(live), confirm_bar=c))
 
-            if not frozen and opp_new[k]:
+            if not frozen and pivot_opp:
                 frozen = True
-                frozen_price = float(opp_price_arr[k])
+                frozen_price = high_l[k - 1] if fvg_type > 0 else low_l[k - 1]
                 freeze_bar = k
 
     out.sort(key=lambda x: x.confirm_bar)
@@ -737,7 +840,11 @@ def _leg_confirmations(
 # ---------------------------------------------------------------------------
 
 
-def _origin_series(bars: Bars, pivots: PivotLevels) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+def _origin_series(
+    bars: Bars,
+    pivots: PivotLevels,
+    offset: int = 0,
+) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     """The causal swing origin in force at every bar, per direction.
 
     ``+1`` is the bullish-gap tracker (its origin is a **swing low**), ``-1``
@@ -749,6 +856,10 @@ def _origin_series(bars: Bars, pivots: PivotLevels) -> dict[int, tuple[np.ndarra
     extreme (``originBar = bar_index - 1``); the two readings are reconciled
     here by using the extreme itself, which is the only reading under which the
     break-even level is a swing level at all.
+
+    ``offset`` restores the reference's literal bar index (``-1``) without
+    touching the price: both readings name the same level, they only disagree
+    about *when* it was published.
     """
     n = len(bars)
     out: dict[int, tuple[np.ndarray, np.ndarray]] = {}
@@ -763,6 +874,9 @@ def _origin_series(bars: Bars, pivots: PivotLevels) -> dict[int, tuple[np.ndarra
             ok = pos >= 0
             origin_bar[ok] = idx[pos[ok]]
             origin_price[ok] = price_src[idx[pos[ok]]]
+        if offset:
+            shifted = origin_bar + int(offset)
+            origin_bar = np.where(origin_bar >= 0, np.maximum(shifted, -1), -1)
         out[direction] = (origin_bar, origin_price)
     return out
 
@@ -796,24 +910,45 @@ def _hhmm_to_minutes(text: str) -> int:
     return int(hh) * 60 + int(mm)
 
 
-def _sweep_events(bars: Bars, pivots: PivotLevels, config: RuleConfig) -> list[SweepEvent]:
+def _sweep_events(
+    bars: Bars,
+    pivots: PivotLevels,
+    config: RuleConfig,
+    htf=None,
+) -> list[SweepEvent]:
     """Every liquidity sweep, with the reference's one-shot level consumption.
 
     A level becomes usable one bar after it is published: the swing is known at
     the close of the confirming bar and the sweep test uses the bar's own
     high/low, which is only complete at that bar's close.
+
+    ``config.sweep_source`` selects the **object**: ``"swings"`` uses the
+    code-derived detector (the same timeframe, a five-bar fractal and an added
+    body-reclaim condition); ``"htf_fractal"`` reproduces the reference's own
+    detector -- the levels are the three-bar fractals of the hand-aggregated
+    HTF series and the pierce is strict (``pine:L544-630``).
     """
     n = len(bars)
-    det = SweepDetector(
-        require_body_reclaim=config.sweep_requires_body_reclaim,
-        consume_levels=config.sweep_consumes_levels,
-    )
-    published: list[tuple[int, float, int]] = []
-    for known, price in zip(pivots.high_known, pivots.high_price):
-        published.append((int(known) + 1, float(price), 1))
-    for known, price in zip(pivots.low_known, pivots.low_price):
-        published.append((int(known) + 1, float(price), -1))
-    published.sort()
+    if config.sweep_source == "htf_fractal":
+        if htf is None:
+            raise ValueError("the 'htf_fractal' sweep source needs the HTF series")
+        det = SweepDetector(require_body_reclaim=False, consume_levels=True)
+        published = [
+            (int(level.known_at) + 1, float(level.price), int(level.direction))
+            for level in htf.levels
+        ]
+        published.sort()
+    else:
+        det = SweepDetector(
+            require_body_reclaim=config.sweep_requires_body_reclaim,
+            consume_levels=config.sweep_consumes_levels,
+        )
+        published = []
+        for known, price in zip(pivots.high_known, pivots.high_price):
+            published.append((int(known) + 1, float(price), 1))
+        for known, price in zip(pivots.low_known, pivots.low_price):
+            published.append((int(known) + 1, float(price), -1))
+        published.sort()
 
     events: list[SweepEvent] = []
     pi = 0
@@ -844,7 +979,12 @@ def _build_candidates(
     minutes: np.ndarray,
     extremes,
     sweep_flags: np.ndarray,
-    pivots: PivotLevels | None = None,
+    *,
+    regime_labels: np.ndarray | None = None,
+    sweep_bars: dict[int, np.ndarray] | None = None,
+    evicted: dict[int, int] | None = None,
+    never_tradable: set[int] | None = None,
+    htf=None,
 ) -> list[Candidate]:
     """Turn confirmations into fully priced candidates."""
     n = len(bars)
@@ -866,6 +1006,22 @@ def _build_candidates(
         if age < min_age or age > config.inversion_max_bars:
             continue
 
+        # --- the reference's HTF confluence gate ----------------------------
+        # ``onlyShowHtfAlignedIFVG`` (default **false**): the setup must
+        # overlap an unreclaimed HTF FVG zone that is knowable at the
+        # confirmation bar (``pine:L635-647``, ``pine:L444-445``).
+        if config.require_htf_alignment:
+            if htf is None:
+                raise ValueError("the HTF confluence gate needs the HTF series")
+            zones = htf.zones_at(confirm_bar)
+            gap_low = float(fvgs.gap_low[i])
+            gap_high = float(fvgs.gap_high[i])
+            aligned = any(
+                zone.bottom <= gap_high and zone.top >= gap_low for zone in zones
+            )
+            if not aligned:
+                continue
+
         gap_low = float(fvgs.gap_low[i])
         gap_high = float(fvgs.gap_high[i])
         far_edge = gap_low if fvg_type > 0 else gap_high
@@ -882,29 +1038,55 @@ def _build_candidates(
 
         # --- stop ----------------------------------------------------------
         stop, risk = _place_stop(
-            bars, config, side, c, confirm_bar, entry_price, gap_low, gap_high, pivots
+            bars, config, side, c, confirm_bar, entry_price, gap_low, gap_high
         )
         if stop is None or risk <= 0.0:
             continue
-        target = entry_price + side * config.rr * risk
 
-        origin_bar_arr, origin_price_arr = origins[side]
+        # --- the regime decides the trade's shape ---------------------------
+        # The doc's per-regime policy (L107-109): the target distance, the
+        # risk per trade and the gap filter's ATR floor all follow the band.
+        rr = config.rr
+        risk_multiplier = 1.0
+        if regime_labels is not None:
+            label = int(regime_labels[confirm_bar])
+            if label >= 0:
+                params = regime_parameters(label)
+                rr = params.rr
+                risk_multiplier = params.risk_multiplier
+        target = entry_price + side * rr * risk
 
-        # --- the BE-intact gate -------------------------------------------
-        # The reference only takes a setup when the swing the leg started from
-        # is still intact: if price already traded through the origin level
-        # between the origin and the confirmation, the break-even level the
-        # reference would move the stop to no longer exists.
-        if config.require_be_intact:
-            ob = int(origin_bar_arr[confirm_bar])
-            op = float(origin_price_arr[confirm_bar])
-            if ob >= 0 and not math.isnan(op):
-                if side < 0:
-                    taken = float(bars.high[ob : confirm_bar + 1].max()) > op
-                else:
-                    taken = float(bars.low[ob : confirm_bar + 1].min()) < op
-                if taken:
-                    continue
+        # The origin belongs to the **tracker that produced the gap**, not to
+        # the trade: the reference's bullish-gap tracker (``isLow=true``) is
+        # fed by swing *lows* and its bearish twin by swing *highs*
+        # (``pine:L246-259``).  The trade runs *against* the gap, so the
+        # tracker key is ``fvg_type`` -- using the trade side here pointed the
+        # break-even level at the wrong leg of the market (and made the
+        # ``require_be_intact`` gate reject almost everything).
+        origin_bar_arr, origin_price_arr = origins[fvg_type]
+        origin_price = float(origin_price_arr[confirm_bar])
+
+        # --- the break-even-intact gate -------------------------------------
+        # The reference's ``requireBEIntact`` (default **on**) drops a setup
+        # whose *confirmation close* has already reached the swing origin --
+        # the level the trade would break even at.  It is a **predictive**
+        # filter: it removes setups before they exist, so it changes the
+        # population rather than the rendering (L2 row 14, PINE R16).
+        if config.require_be_intact and math.isfinite(origin_price):
+            close = float(bars.close[confirm_bar])
+            breached = close >= origin_price if side > 0 else close <= origin_price
+            if breached:
+                continue
+
+        origin_bar = int(origin_bar_arr[confirm_bar])
+        sweep_since_origin = False
+        if sweep_bars is not None and origin_bar >= 0:
+            side_bars = sweep_bars.get(fvg_type)
+            if side_bars is not None and side_bars.size:
+                idx = int(np.searchsorted(side_bars, origin_bar, side="right"))
+                sweep_since_origin = bool(
+                    idx < side_bars.size and int(side_bars[idx]) <= confirm_bar
+                )
 
         out.append(
             Candidate(
@@ -924,9 +1106,14 @@ def _build_candidates(
                 far_edge=far_edge,
                 bars_to_inversion=age,
                 minutes_from_us_open=int(minutes[confirm_bar]) - US_OPEN_MINUTES,
-                origin_bar=int(origin_bar_arr[confirm_bar]),
-                origin_price=float(origin_price_arr[confirm_bar]),
+                origin_bar=origin_bar,
+                origin_price=origin_price,
+                be_price=origin_price,
+                sweep_since_origin=sweep_since_origin,
+                dropped_by_cap=bool(evicted and i in evicted),
+                never_tradable=bool(never_tradable and i in never_tradable),
                 sweep_detected=1 if sweep_flags[confirm_bar] else 0,
+                risk_multiplier=risk_multiplier,
             )
         )
     return out
@@ -941,7 +1128,6 @@ def _place_stop(
     entry_price: float,
     gap_low: float,
     gap_high: float,
-    pivots: PivotLevels | None = None,
 ) -> tuple[float | None, float]:
     """Place the stop and return ``(stop, risk)``.
 
@@ -977,39 +1163,19 @@ def _place_stop(
         candle_bullish = bars.close[bar] > bars.open[bar]
         stop = float(bars.open[bar]) if candle_bullish == (side > 0) else float(bars.close[bar])
     elif config.stop_placement == "swing":
-        stop = _swing_stop(bars, side, confirm_bar, pivots)
+        stop = _swing_stop(bars, side, confirm_bar)
         if stop is None:
             return None, 0.0
 
     risk = (entry_price - stop) if side > 0 else (stop - entry_price)
     if risk <= 0.0:
         return None, 0.0
-
-    # The cost of a trade is a fixed number of dollars, so its cost **in R**
-    # falls as the stop gets wider.  ``stop_mult`` moves the stop away from
-    # the entry by that factor, which is the only lever that touches the
-    # cost ratio directly.
-    if config.stop_mult != 1.0:
-        stop = entry_price + (stop - entry_price) * config.stop_mult
-        risk = (entry_price - stop) if side > 0 else (stop - entry_price)
-        if risk <= 0.0:
-            return None, 0.0
     return stop, risk
 
 
-def _swing_stop(
-    bars: Bars, side: int, confirm_bar: int, pivots: PivotLevels | None = None
-) -> float | None:
-    """The most recent swing extreme published before ``confirm_bar``.
-
-    The pivots are passed in: recomputing them here would make the cost of
-    one candidate proportional to the length of the whole series, so the
-    ``"swing"`` stop placement would take hours on a ten-year sample.
-    """
-    if pivots is None:
-        pivots = causal_pivots(
-            bars.high, bars.low, left=SWING_FRACTAL - 1, right=SWING_RIGHT_BARS
-        )
+def _swing_stop(bars: Bars, side: int, confirm_bar: int) -> float | None:
+    """The most recent swing extreme published before ``confirm_bar``."""
+    pivots = causal_pivots(bars.high, bars.low, left=SWING_FRACTAL - 1, right=SWING_RIGHT_BARS)
     if side > 0:
         end = int(np.searchsorted(pivots.low_known, confirm_bar, side="left"))
         if end == 0:
@@ -1061,8 +1227,15 @@ def _attach_checklist(
         if cand.side > 0:
             above = hs[hs > entry]
             has_target = bool(above.size and float(above.max()) - entry >= reach)
-            if not has_target and math.isfinite(pdh) and pdh - entry >= reach:
-                has_target = True
+            target_price = float("nan")
+            if above.size:
+                ordered = np.sort(above)
+                idx = int(np.searchsorted(ordered, entry + reach, side="left"))
+                if idx < ordered.size:
+                    target_price = float(ordered[idx])
+            if not math.isfinite(target_price) and math.isfinite(pdh) and pdh - entry >= reach:
+                target_price = float(pdh)
+            has_target = math.isfinite(target_price)
             obstructed = False
             if above.size:
                 window = np.sort(above[above <= entry + reach])
@@ -1071,13 +1244,24 @@ def _attach_checklist(
         else:
             below = ls[ls < entry]
             has_target = bool(below.size and entry - float(below.min()) >= reach)
-            if not has_target and math.isfinite(pdl) and entry - pdl >= reach:
-                has_target = True
+            target_price = float("nan")
+            if below.size:
+                ordered = np.sort(below)
+                # the nearest pool below the entry is the largest one that is
+                # still at least ``reach`` away
+                idx = int(np.searchsorted(ordered, entry - reach, side="right")) - 1
+                if idx >= 0:
+                    target_price = float(ordered[idx])
+            if not math.isfinite(target_price) and math.isfinite(pdl) and entry - pdl >= reach:
+                target_price = float(pdl)
+            has_target = math.isfinite(target_price)
             obstructed = False
             if below.size:
                 window = np.sort(below[below >= entry - reach])
                 if window.size >= 2 and float(np.min(np.diff(window))) <= tol:
                     obstructed = True
+
+        cand.liquidity_target_price = target_price
 
         flags = {
             "smt_divergence": False,
@@ -1088,34 +1272,6 @@ def _attach_checklist(
         }
         cand.checklist_flags = flags
         cand.checklist_score = float(sum(1 for v in flags.values() if v))
-
-
-def _score_checklist(candidates: list[Candidate]) -> None:
-    """Score the checklist **after** every condition has been attached.
-
-    The score must not be computed inside :func:`_attach_checklist`: the SMT
-    and the VXN regime are attached later, so scoring there silently counted
-    them as failures and capped the score at 2 of 5.
-
-    A condition that could not be **decided** — the SMT where the reference
-    instrument does not cover the window, the regime where no series is
-    attached — is not counted against the candidate.  It is excluded from both
-    the score and the number of decidable conditions
-    (:attr:`Candidate.checklist_known`), so the score stays comparable across
-    the sample.
-    """
-    for cand in candidates:
-        flags = cand.checklist_flags
-        decidable = {
-            "smt_divergence": cand.smt_divergence >= 0,
-            "no_obstruction": True,
-            "liquidity_target_2r": True,
-            "vision_iou_pass": False,        # the layer does not exist (D12)
-            "vxn_regime_normal": cand.vxn_regime >= 0,
-        }
-        known = [name for name, ok in decidable.items() if ok]
-        cand.checklist_known = len(known)
-        cand.checklist_score = float(sum(1 for name in known if flags.get(name, False)))
 
 
 # ---------------------------------------------------------------------------
@@ -1167,27 +1323,14 @@ def _attach_smt(
         if cand.side > 0:
             traded_new = float(bars.low[leg_start : i + 1].min())
             traded_old = float(bars.low[pre_start:leg_start].min())
-            ref_new_seg = ref_low[leg_start : i + 1]
-            ref_old_seg = ref_low[pre_start:leg_start]
-            if not np.isfinite(ref_new_seg).any() or not np.isfinite(ref_old_seg).any():
-                # the reference instrument does not cover this window: the
-                # divergence is UNKNOWN, not absent (the ES panel starts in
-                # 2020-11 while NQ starts in 2015).
-                cand.smt_divergence = -1
-                continue
-            ref_new = float(np.nanmin(ref_new_seg))
-            ref_old = float(np.nanmin(ref_old_seg))
+            ref_new = float(np.nanmin(ref_low[leg_start : i + 1]))
+            ref_old = float(np.nanmin(ref_low[pre_start:leg_start]))
             divergence = traded_new < traded_old and not (ref_new < ref_old)
         else:
             traded_new = float(bars.high[leg_start : i + 1].max())
             traded_old = float(bars.high[pre_start:leg_start].max())
-            ref_new_seg = ref_high[leg_start : i + 1]
-            ref_old_seg = ref_high[pre_start:leg_start]
-            if not np.isfinite(ref_new_seg).any() or not np.isfinite(ref_old_seg).any():
-                cand.smt_divergence = -1
-                continue
-            ref_new = float(np.nanmax(ref_new_seg))
-            ref_old = float(np.nanmax(ref_old_seg))
+            ref_new = float(np.nanmax(ref_high[leg_start : i + 1]))
+            ref_old = float(np.nanmax(ref_high[pre_start:leg_start]))
             divergence = traded_new > traded_old and not (ref_new > ref_old)
         cand.smt_divergence = 1 if divergence else 0
         cand.checklist_flags["smt_divergence"] = bool(divergence)
@@ -1198,7 +1341,14 @@ def _attach_smt(
 # ---------------------------------------------------------------------------
 
 
-def _attach_regime(candidates: list[Candidate], bars: Bars, regime) -> None:
+def _attach_regime(
+    candidates: list[Candidate],
+    bars: Bars,
+    regime,
+    *,
+    levels: np.ndarray | None = None,
+    labels: np.ndarray | None = None,
+) -> None:
     """Attach the strictly-lagged regime value to every candidate."""
     if regime is None:
         for cand in candidates:
@@ -1206,17 +1356,138 @@ def _attach_regime(candidates: list[Candidate], bars: Bars, regime) -> None:
             cand.vxn_regime = -1
         return
 
-    known, label = regime.value_at(bars.ts)
+    if levels is None or labels is None:
+        levels, labels = regime.value_at(bars.ts)
     for cand in candidates:
         i = cand.confirm_bar
-        cand.vxn_known = float(known[i])
-        cand.vxn_regime = int(label[i])
-        cand.checklist_flags["vxn_regime_normal"] = int(label[i]) == 1
+        cand.vxn_known = float(levels[i])
+        cand.vxn_regime = int(labels[i])
+        cand.checklist_flags["vxn_regime_normal"] = int(labels[i]) == 1
 
 
 # ---------------------------------------------------------------------------
 # Outcomes
 # ---------------------------------------------------------------------------
+
+
+def _roll_boundary_bars(
+    bars: Bars,
+    price_gap_frac: float,
+    bars_around: int = 2,
+) -> set[int]:
+    """The bars around a contract roll -- a discontinuous price jump.
+
+    A continuous series that switches contract leaves a gap the engine would
+    read as a liquidity sweep, so the bars around the jump are excluded from
+    the signal population (Q5: the roll rule matters because a roll gap can
+    fake a sweep).
+    """
+    if price_gap_frac <= 0.0 or len(bars) < 2:
+        return set()
+    close = bars.close
+    previous = close[:-1]
+    current = close[1:]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        relative = np.abs(current - previous) / np.maximum(np.abs(previous), 1e-12)
+    jumps = np.flatnonzero(relative >= price_gap_frac) + 1
+    excluded: set[int] = set()
+    n = len(bars)
+    for jump in jumps:
+        start = max(0, int(jump) - bars_around)
+        stop = min(n, int(jump) + bars_around + 1)
+        excluded.update(range(start, stop))
+    return excluded
+
+
+def _apply_setup_history_cap(candidates: list[Candidate], cap: int) -> None:
+    """The reference's ``setupHistory`` cap (L2 row 28, audit D-11).
+
+    The reference keeps only the last ``setupHistory`` setups in
+    ``setupRecords``; when a new setup is pushed, the oldest is shifted out
+    **and removed from the live-trade array**, so an unresolved setup stops
+    being managed and never resolves (``pine:L482-495``).
+
+    The port reproduces that side effect: an evicted setup that had not
+    resolved yet loses its outcome and is reported as ``"unmanaged"`` -- it is
+    neither a stop nor a target, and it keeps the censored label ``-1``.
+    """
+    live: list[Candidate] = []
+    for cand in sorted(candidates, key=lambda c: (c.ts_event, c.side)):
+        live.append(cand)
+        if len(live) <= cap:
+            continue
+        oldest = live.pop(0)
+        resolved_before = oldest.exit_bar >= 0 and oldest.exit_bar <= cand.entry_bar
+        if resolved_before:
+            continue
+        oldest.outcome = "unmanaged"
+        oldest.r_multiple = float("nan")
+        oldest.exit_bar = -1
+
+
+def _candidate_cap_drops(
+    fvgs,
+    confirmations: list[_Confirmation],
+    config: RuleConfig,
+) -> tuple[dict[int, int], set[int]]:
+    """Emulate the reference's per-direction candidate cap (L2 row 29).
+
+    The reference keeps at most ``MAX_TRACKED_SETUPS`` gaps **per direction**
+    in its tracking array (``pine:L78``, ``pine:L286-291``).  A push beyond
+    the cap drops the **oldest** entry, which can then never trigger.
+
+    Two rules of that array decide *when* the cap binds, and both are
+    reproduced here:
+
+    * an entry that has already **confirmed** is never removed from the
+      array -- the expiry branch sits inside ``if not e.ifvgConfirmed``
+      (``pine:L437``, ``pine:L500``) -- so confirmed entries accumulate and
+      the array saturates;
+    * an entry that has **not** confirmed is dropped once it is older than
+      the grace window (``bar_index - fvgBar1 > graceCandles``).
+
+    The evaluation bars follow the reference: the gap is pushed on the bar
+    after its third candle, the trigger is tested on the bar after the
+    confirmation candle and the age is measured from the gap's **newest**
+    candle (``fvgBar1`` in the reference's naming).
+
+    Returns the eviction bar per gap index and the set of gaps the cap
+    dropped *before* they could trigger.
+    """
+    confirm_by_gap = {conf.fvg_index: conf.confirm_bar for conf in confirmations}
+    grace = max(0, config.inversion_max_bars)
+    evicted: dict[int, int] = {}
+    never_tradable: set[int] = set()
+    for direction in (1, -1):
+        events: list[tuple[int, int, int]] = []
+        for i in range(len(fvgs)):
+            if int(fvgs.fvg_type[i]) != direction:
+                continue
+            c = int(fvgs.newest[i])
+            events.append((c + 1, 0, i))                      # push
+            conf_bar = confirm_by_gap.get(i)
+            if conf_bar is not None:
+                events.append((conf_bar + 1, 1, i))          # trigger
+            events.append((c + grace + 1, 2, i))             # expiry
+        if not events:
+            continue
+        events.sort()
+        array: deque[int] = deque()
+        confirmed: set[int] = set()
+        for bar, kind, i in events:
+            if kind == 0:
+                array.append(i)
+                if len(array) > MAX_TRACKED_SETUPS:
+                    old = array.popleft()
+                    evicted[old] = bar
+                    if old not in confirmed:
+                        never_tradable.add(old)
+            elif kind == 1:
+                confirmed.add(i)
+            elif i not in confirmed and i in array:
+                # the entry expired unconfirmed and leaves the array
+                array.remove(i)
+    return evicted, never_tradable
 
 
 def _resolve_outcomes(candidates: list[Candidate], bars: Bars, config: RuleConfig) -> None:
@@ -1226,6 +1497,13 @@ def _resolve_outcomes(candidates: list[Candidate], bars: Bars, config: RuleConfi
     reached, 0 when the stop was hit and -1 when the setup never resolved.
     The portfolio (one position at a time) selects a subset of these rows; the
     outcome of a selected row does not change.
+
+    The resolution is capped at ``LABEL_HORIZON_BARS``: a setup that has
+    resolved neither way within the horizon is **censored** (``-1``), not
+    left open forever.  This is what makes the horizon -- and therefore the
+    purge and the embargo -- well defined, and it gives the log **one** label
+    definition: the ML pipeline's ``build_labels`` uses the same horizon and
+    the same cap, so the two agree row for row (F6).
     """
     if not candidates:
         return
@@ -1238,10 +1516,28 @@ def _resolve_outcomes(candidates: list[Candidate], bars: Bars, config: RuleConfi
     suffix_min_low = np.minimum.accumulate(low[::-1])[::-1]
     suffix_max_high = np.maximum.accumulate(high[::-1])[::-1]
     for cand in candidates:
+        if cand.never_tradable:
+            # The reference's tracking array dropped this setup before it
+            # could trigger: it is logged (never erased) but never traded.
+            cand.outcome = "discarded"
+            cand.r_multiple = float("nan")
+            cand.exit_bar = -1
+            continue
         scan_start = cand.entry_bar if config.entry_fill == "next_open" else cand.entry_bar + 1
         if scan_start >= n:
             cand.outcome = "open"
             continue
+        # The end of the resolution window: the horizon in bars from the fill.
+        scan_end = min(n, scan_start + int(config.horizon_bars))
+        # The reference's break-even level: the swing origin of the leg that
+        # produced the gap.  Recorded for every candidate (L2 row 19) and used
+        # to resolve the setups our own stop/target never reach (row 20).
+        be_bar = (
+            _break_even_hit(bars, cand, scan_start, scan_end)
+            if config.resolve_break_even
+            else -1
+        )
+        cand.be_hit_bar = be_bar
         if cand.side > 0:
             stop_possible = bool(suffix_min_low[scan_start] <= cand.stop_price)
             target_possible = bool(suffix_max_high[scan_start] >= cand.target_price)
@@ -1249,13 +1545,40 @@ def _resolve_outcomes(candidates: list[Candidate], bars: Bars, config: RuleConfi
             stop_possible = bool(suffix_max_high[scan_start] >= cand.stop_price)
             target_possible = bool(suffix_min_low[scan_start] <= cand.target_price)
         if not stop_possible and not target_possible:
+            # The stop and the target are both still out of reach at the end
+            # of the sample; the reference's break-even level may still have
+            # resolved the trade.
             cand.outcome = "open"
             cand.r_multiple = float("nan")
+            if be_bar >= 0:
+                cand.outcome = "break_even"
+                cand.exit_bar = int(be_bar)
+                cand.r_multiple = _realised_multiple(cand, float(cand.be_price))
             continue
-        bar = _first_hit(low, high, scan_start, cand.side, cand.stop_price, cand.target_price)
+        bar = _first_hit(
+            low,
+            high,
+            scan_start,
+            cand.side,
+            cand.stop_price,
+            cand.target_price,
+            end=scan_end,
+        )
         if bar < 0:
-            cand.outcome = "open"
+            # Neither the stop nor the target was reached within the horizon:
+            # the setup is censored, not a loss.
+            cand.outcome = "expired"
             cand.r_multiple = float("nan")
+            if be_bar >= 0:
+                # The reference closes the trade at the leg origin (its
+                # "B.E." exit, ``pine:L476-491``): the setup *did* resolve,
+                # just not at our stop or target.  The D2 label vocabulary has
+                # no code for that third closed state, so the row keeps the
+                # censored label ``-1`` -- the same value the ML pipeline's
+                # ``build_labels`` gives it (F6).
+                cand.outcome = "break_even"
+                cand.exit_bar = int(be_bar)
+                cand.r_multiple = _realised_multiple(cand, float(cand.be_price))
             continue
         hit_stop = (low[bar] <= cand.stop_price) if cand.side > 0 else (high[bar] >= cand.stop_price)
         if hit_stop:
@@ -1263,8 +1586,43 @@ def _resolve_outcomes(candidates: list[Candidate], bars: Bars, config: RuleConfi
             cand.r_multiple = -1.0
         else:
             cand.outcome = "target"
-            cand.r_multiple = config.rr
+            # The realised multiple is the **actual** target distance, which
+            # follows the regime's RR when one is attached -- not the config's.
+            cand.r_multiple = (cand.target_price - cand.entry_price) * cand.side / cand.risk
         cand.exit_bar = bar
+
+
+def _realised_multiple(cand: Candidate, exit_price: float) -> float:
+    """The realised multiple of a candidate that closed at ``exit_price``."""
+    risk = float(cand.risk)
+    if not math.isfinite(risk) or risk <= 0.0:
+        return float("nan")
+    return (float(exit_price) - float(cand.entry_price)) * int(cand.side) / risk
+
+
+def _break_even_hit(bars: Bars, cand: Candidate, start: int, end: int) -> int:
+    """The first bar at or after ``start`` that reaches the break-even level.
+
+    The break-even level is the swing **origin** of the leg that produced the
+    gap (``pine:L476``): for a long it is the swing high the bearish leg
+    started from, for a short the swing low the bullish leg started from.  The
+    reference closes the trade when price gets back there.
+
+    ``-1`` is returned when the level is unknown (no pivot yet) or when price
+    never reached it inside ``[start, end)``.
+    """
+    level = cand.be_price
+    if not math.isfinite(level):
+        return -1
+    if end <= start:
+        return -1
+    if cand.side > 0:
+        hits = bars.high[start:end] >= level
+    else:
+        hits = bars.low[start:end] <= level
+    if not hits.any():
+        return -1
+    return start + int(np.argmax(hits))
 
 
 def _first_hit(
@@ -1334,8 +1692,6 @@ def run_deferred_portfolio(
     fvgs = detect_fvg(bars, atr, config.min_gap_atr_mult)
     if len(fvgs) == 0:
         return []
-    # computed once: the "swing" stop placement needs them for every candidate
-    pivots = causal_pivots(bars.high, bars.low, left=SWING_FRACTAL - 1, right=SWING_RIGHT_BARS)
 
     min_age = max(0, config.inversion_min_bars)
     max_age = max(min_age, config.inversion_max_bars)
@@ -1419,7 +1775,7 @@ def run_deferred_portfolio(
             age = confirm_bar - int(fvgs.newest[i_fvg])
             if age < min_age or age > max_age:
                 continue
-            cand = _price_candidate(bars, fvgs, i_fvg, confirm_bar, config, pivots)
+            cand = _price_candidate(bars, fvgs, i_fvg, confirm_bar, config)
             if cand is None:
                 continue
             confirmed[i_fvg] = True
@@ -1480,7 +1836,6 @@ def _price_candidate(
     i_fvg: int,
     confirm_bar: int,
     config: RuleConfig,
-    pivots: PivotLevels | None = None,
 ) -> Candidate | None:
     """Price one confirmed setup (entry, stop, target)."""
     n = len(bars)
@@ -1500,7 +1855,7 @@ def _price_candidate(
         entry_price = float(bars.open[entry_bar])
 
     stop, risk = _place_stop(
-        bars, config, side, c, confirm_bar, entry_price, gap_low, gap_high, pivots
+        bars, config, side, c, confirm_bar, entry_price, gap_low, gap_high
     )
     if stop is None or risk <= 0.0:
         return None

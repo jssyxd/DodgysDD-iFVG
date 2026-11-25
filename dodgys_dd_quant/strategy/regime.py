@@ -36,7 +36,6 @@ from pathlib import Path
 import numpy as np
 
 from dodgys_dd_quant.strategy.constants import (
-    DVOL_REGIME_BINS,
     REGIME_HIGH,
     REGIME_LOW,
     REGIME_NORMAL,
@@ -47,11 +46,14 @@ from dodgys_dd_quant.strategy.constants import (
 
 __all__ = [
     "RegimeIndex",
+    "RegimeSeries",
+    "RegimeState",
     "VxnRegimeIndex",
     "DvolRegimeIndex",
     "ConstantRegimeIndex",
     "regime_label",
     "regime_parameters",
+    "regime_state",
     "load_vxn_parquet",
     "DEFAULT_VXN_PATH",
 ]
@@ -76,12 +78,18 @@ def regime_label(value: float, bins: tuple[float, ...] = VXN_REGIME_BINS) -> int
     ``0`` low-vol range, ``1`` normal trend, ``2`` high-vol panic.  The fourth
     edge (200) does not create a fourth label; it marks the *extreme* end of
     the high-vol band (reported by :func:`is_extreme`).
+
+    The band edges are **inclusive at the top** (``RULE_SPEC`` §1.9):
+    ``(-inf, 18) -> 0 | [18, 28] -> 1 | (28, inf) -> 2``.  The discussion's
+    literal ``pd.cut(bins=[0, 18, 28, 200])`` is right-closed and would put
+    28 in the *high* band (I05) -- and would disagree with the feature
+    pipeline's own binning, which is inclusive.
     """
     if value is None or not math.isfinite(value):
         return -1
     if value < bins[1]:
         return REGIME_LOW
-    if value < bins[2]:
+    if value <= bins[2]:
         return REGIME_NORMAL
     return REGIME_HIGH
 
@@ -99,6 +107,170 @@ def regime_parameters(regime: int) -> RegimeParameters:
     the risk/reward", which is what this table does.
     """
     return REGIME_PARAMETERS.get(regime, REGIME_PARAMETERS[REGIME_NORMAL])
+
+
+# ---------------------------------------------------------------------------
+# The regime state (L3 section C.6)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RegimeSeries:
+    """A daily index series: the day of each observation and its close."""
+
+    days: np.ndarray
+    closes: np.ndarray
+    name: str = "VXN"
+
+
+@dataclass(frozen=True, slots=True)
+class RegimeState:
+    """The regime **knowable** at a point in time.
+
+    Every field is a decision-time quantity:
+
+    ``known_at_ns``
+        when the value became public (the publication time of the
+        observation).  Never later than the decision.
+    ``level``
+        the index level itself.
+    ``regime``
+        the band: 0 low / 1 normal / 2 high.
+    ``percentile``
+        the trailing percentile of the level, which makes the band
+        scale-free (the doc's own per-market generalisation, RULE_SPEC A34).
+    ``stale_days``
+        how many days old the level is.  A carried-forward regime is
+        **visibly** stale instead of silently looking fresh (L3 trap 2).
+    ``index_name``
+        which index this is -- the D2 columns are named ``vxn_*`` but the
+        migration table assigns a different index per market.
+    """
+
+    known_at_ns: int
+    level: float
+    regime: int
+    percentile: float
+    stale_days: int
+    index_name: str
+
+
+def regime_state(
+    index_name: str,
+    asof_ns: int,
+    series: RegimeSeries,
+    *,
+    bins: tuple[float, ...] = VXN_REGIME_BINS,
+    trailing_days: int = 252,
+) -> RegimeState | None:
+    """The regime **knowable** at ``asof_ns``, or ``None``.
+
+    The observation used is the last one whose **publication time** is at or
+    before ``asof_ns`` -- never one published later, and never a value
+    back-filled from the future (L3 trap 2: ``shift(1).bfill()`` silently
+    fills the head of the series with the future).
+
+    A daily index is published at 16:15 ET on its trade date, so the
+    publication time of day ``d`` is ``d`` at 16:15 America/New_York.
+    """
+    days = np.asarray(series.days, dtype=np.int64)
+    closes = np.asarray(series.closes, dtype=np.float64)
+    if days.size == 0:
+        return None
+
+    order = np.argsort(days, kind="stable")
+    days = days[order]
+    closes = closes[order]
+
+    published = _publication_ns(days)
+    # The last observation published at or before the decision.
+    position = int(np.searchsorted(published, int(asof_ns), side="right")) - 1
+    if position < 0:
+        return None
+
+    level = float(closes[position])
+    observation_day = int(days[position])
+    decision_day = int(asof_ns) // _NS_PER_DAY
+    stale_days = max(0, decision_day - observation_day)
+
+    window_start = max(0, position + 1 - int(trailing_days))
+    window = closes[window_start : position + 1]
+    percentile = (
+        float((window <= level).sum()) / float(window.size) if window.size else float("nan")
+    )
+
+    return RegimeState(
+        known_at_ns=int(published[position]),
+        level=level,
+        regime=regime_label(level, bins),
+        percentile=percentile,
+        stale_days=stale_days,
+        index_name=index_name,
+    )
+
+
+#: The band mappings a market may name (RULE_SPEC A34).
+BAND_MODE_ABSOLUTE = "absolute"
+BAND_MODE_PERCENTILE = "percentile"
+
+
+def band_mode_for(symbol: str) -> str:
+    """The band mapping the market's row names.
+
+    The doc's absolute bins (``18`` / ``28``) are stated for **VXN only**;
+    the audit measured that they do not transfer -- VXN and VIX disagree on
+    roughly half the days -- so every other market uses the index's own
+    trailing tertiles (RULE_SPEC A34).
+    """
+    from dodgys_dd_quant.strategy.constants import market_params
+
+    return market_params(symbol).regime_bands
+
+
+def percentile_band_labels(
+    closes: np.ndarray,
+    positions: np.ndarray,
+    known: np.ndarray,
+    *,
+    trailing_days: int = 365,
+) -> np.ndarray:
+    """The band of every observation by its **own** trailing tertiles.
+
+    The tertiles are computed from the history that was published *before*
+    the observation, so the mapping is causal: a bar never sees a quantile
+    that was computed with later data.
+    """
+    values = np.asarray(closes, dtype=np.float64)
+    labels = np.full(np.shape(known), -1, dtype=np.int8)
+    cache: dict[int, int] = {}
+    for i in range(np.shape(known)[0]):
+        position = int(positions[i])
+        if position < 0 or not math.isfinite(float(known[i])):
+            continue
+        label = cache.get(position)
+        if label is None:
+            start = max(0, position + 1 - int(trailing_days))
+            window = values[start : position + 1]
+            if window.size < 3:
+                label = -1
+            else:
+                low, high = np.quantile(window, [1.0 / 3.0, 2.0 / 3.0])
+                level = float(values[position])
+                label = 0 if level < low else (1 if level < high else 2)
+            cache[position] = label
+        labels[i] = label
+    return labels
+
+
+def _publication_ns(days: np.ndarray) -> np.ndarray:
+    """The publication timestamp of each daily observation, in nanoseconds.
+
+    A daily index is published at **16:15 ET** on its trade date, so the
+    value is not knowable before then (L3 trap 1).  The daylight-time hour
+    is used, which is the later of the two, so a state is never claimed to
+    be knowable before it is.
+    """
+    return days.astype(np.int64) * _NS_PER_DAY + 21 * 3_600_000_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +326,11 @@ class VxnRegimeIndex(RegimeIndex):
     closes: np.ndarray
     bins: tuple[float, ...] = VXN_REGIME_BINS
     name: str = "VXN"
+    #: ``"absolute"`` (the documented points) or ``"percentile"`` (the
+    #: index's own trailing tertiles, RULE_SPEC A34).
+    band_mode: str = BAND_MODE_ABSOLUTE
+    #: The trailing window of the percentile mapping, in observations.
+    trailing_days: int = 365
 
     @classmethod
     def from_parquet(
@@ -173,9 +350,14 @@ class VxnRegimeIndex(RegimeIndex):
         known = np.full(bar_days.shape[0], np.nan, dtype=np.float64)
         ok = pos >= 0
         known[ok] = self.closes[pos[ok]]
-        labels = np.array(
-            [regime_label(v, self.bins) for v in known], dtype=np.int8
-        )
+        if self.band_mode == BAND_MODE_PERCENTILE:
+            labels = percentile_band_labels(
+                self.closes, pos, known, trailing_days=self.trailing_days
+            )
+        else:
+            labels = np.array(
+                [regime_label(v, self.bins) for v in known], dtype=np.int8
+            )
         return known, labels
 
 
@@ -184,24 +366,27 @@ class DvolRegimeIndex(RegimeIndex):
     """Crypto DVOL, resampled to a daily close and lagged the same way.
 
     The doc names DVOL as the crypto regime index but specifies **no bands**,
-    so the band edges are a *calibration input*.  They were originally the VXN
-    edges, which are meaningless on the DVOL scale (the DVOL daily close runs
-    34-90) and made the crypto regime read "high" 81.8 % of the time and
-    "normal" never.  The default is now
-    :data:`~dodgys_dd_quant.strategy.constants.DVOL_REGIME_BINS`, calibrated so
-    the DVOL's daily occupancy matches the VXN's own.
+    so the band edges are a *calibration input*: they default to the VXN edges
+    and must be re-calibrated for the DVOL scale before any claim is made about
+    the crypto regimes.
     """
 
     days: np.ndarray
     closes: np.ndarray
-    bins: tuple[float, ...] = DVOL_REGIME_BINS
+    bins: tuple[float, ...] = VXN_REGIME_BINS
     name: str = "DVOL"
+    #: The crypto index's bands are a calibration input (A34): the default
+    #: mapping is the index's own trailing tertiles, because the doc's
+    #: absolute points are stated for VXN only.
+    band_mode: str = BAND_MODE_PERCENTILE
+    #: The trailing window of the percentile mapping, in observations.
+    trailing_days: int = 365
 
     @classmethod
     def from_parquet(
         cls,
         path: str | Path = DEFAULT_DVOL_PATH,
-        bins: tuple[float, ...] = DVOL_REGIME_BINS,
+        bins: tuple[float, ...] = VXN_REGIME_BINS,
     ) -> "DvolRegimeIndex":
         import pyarrow.parquet as pq
 
@@ -226,7 +411,14 @@ class DvolRegimeIndex(RegimeIndex):
         known = np.full(bar_days.shape[0], np.nan, dtype=np.float64)
         ok = pos >= 0
         known[ok] = self.closes[pos[ok]]
-        labels = np.array([regime_label(v, self.bins) for v in known], dtype=np.int8)
+        if self.band_mode == BAND_MODE_PERCENTILE:
+            labels = percentile_band_labels(
+                self.closes, pos, known, trailing_days=self.trailing_days
+            )
+        else:
+            labels = np.array(
+                [regime_label(v, self.bins) for v in known], dtype=np.int8
+            )
         return known, labels
 
 

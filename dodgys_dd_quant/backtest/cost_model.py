@@ -29,9 +29,11 @@ from dataclasses import dataclass
 from typing import Sequence
 
 __all__ = [
+    "BINANCE_TICKS",
     "CostProfile",
     "COST_PROFILES",
     "get_profile",
+    "profile_for",
     "round_trip_cost",
     "cost_in_r",
     "break_even_cost_r",
@@ -140,6 +142,29 @@ COST_PROFILES: dict[str, CostProfile] = {
         base_crossing_ticks=1,
         description="E-mini S&P-500: 0.25 pt tick = $12.50, $50 multiplier, ~$4.50 round trip",
     ),
+    # The micro contracts: same price series as NQ/ES (same underlying), a
+    # fifth / tenth of the tick value, and retail commission instead of the
+    # institutional $4.50 round turn.
+    "mnq": CostProfile(
+        name="mnq",
+        tick_size=0.25,
+        tick_value=0.50,
+        multiplier=2.0,
+        fee_round_trip=1.05,
+        base_crossing_ticks=1,
+        description="CME Micro Nasdaq-100 (MNQ): tick 0.25 pt = $0.50, "
+                    "multiplier $2, ~$1.05 round-turn commission + 1 tick crossing",
+    ),
+    "mes": CostProfile(
+        name="mes",
+        tick_size=0.25,
+        tick_value=1.25,
+        multiplier=5.0,
+        fee_round_trip=1.25,
+        base_crossing_ticks=1,
+        description="CME Micro S&P 500 (MES): tick 0.25 pt = $1.25, "
+                    "multiplier $5, ~$1.25 round-turn commission + 1 tick crossing",
+    ),
     "binance": CostProfile(
         name="binance",
         tick_size=0.10,
@@ -150,6 +175,38 @@ COST_PROFILES: dict[str, CostProfile] = {
         description="Binance USDT-M futures: taker 0.04 %/side = 0.08 % round trip",
     ),
 }
+
+
+#: The price tick of each Binance USDT-M perp, in quote currency.  A single
+#: "0.10" cannot serve every symbol: on XRP (price ~0.5) it is 20 % of the
+#: price, and one tick of slippage then reads as -12 R per trade.
+BINANCE_TICKS: dict[str, float] = {
+    "BTCUSDT": 0.10,
+    "ETHUSDT": 0.01,
+    "SOLUSDT": 0.01,
+    "BNBUSDT": 0.01,
+    "XRPUSDT": 0.0001,
+    "DOGEUSDT": 0.00001,
+}
+
+
+def profile_for(symbol: str, name: str | None = None) -> CostProfile:
+    """The cost profile of ``symbol``, with that symbol's own tick.
+
+    ``name`` defaults to ``binance`` for a USDT perp and ``nq`` otherwise.
+    """
+    key = (name or ("binance" if symbol.upper().endswith("USDT") else "nq")).lower()
+    base = get_profile(key)
+    if key != "binance":
+        return base
+    tick = BINANCE_TICKS.get(symbol.upper())
+    if tick is None or tick == base.tick_size:
+        return base
+    from dataclasses import replace as _replace
+
+    # a linear USDT-M contract: one tick of price move is ``tick`` quote
+    # currency per coin, so the tick's value equals its size
+    return _replace(base, tick_size=tick, tick_value=tick)
 
 
 def get_profile(name: str) -> CostProfile:

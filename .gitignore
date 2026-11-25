@@ -12,16 +12,10 @@ research/kaggle/
 # ---- data + model artefacts ----
 data/
 artifacts/
-artifacts_pine/
 research/candidates/
 *.parquet
 *.zip
 .venv-ml/
-
-# ---- the local copy of the governed lake ----
-# The canonical copy lives on the NFS lake; this checkout is a working copy.
-03_governed_lake/
-logs/
 
 # ---- agent runtime state ----
 .pi/

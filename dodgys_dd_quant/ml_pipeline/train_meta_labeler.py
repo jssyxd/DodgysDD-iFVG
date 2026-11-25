@@ -61,6 +61,7 @@ from dodgys_dd_quant.ml_pipeline import (
     LGBM_LEARNING_RATE,
     LGBM_N_ESTIMATORS,
     LGBM_NUM_LEAVES,
+    LGBM_NUM_THREADS,
     LGBM_SEED,
     MIN_POSITIVES_TRAIN,
     MIN_POSITIVES_VALID,
@@ -91,6 +92,7 @@ __all__ = [
     "LightGBMUnavailable",
     "load_candidates",
     "load_bars",
+    "model_dir_for",
     "train_walk_forward",
     "plan_folds",
     "main",
@@ -99,6 +101,18 @@ __all__ = [
 MODEL_FILENAME = "meta_label_lgbm.txt"
 META_FILENAME = "meta_label_meta.json"
 INDEX_FILENAME = "walk_forward_index.json"
+
+
+def model_dir_for(run_root: str | Path, symbol: str, asof_compact: str) -> Path:
+    """The D3 model directory of one fold.
+
+    The layout is ``{run_root}/models/{symbol}/asof_{YYYYMMDD}/``.  It is the
+    single source of truth for the artefact path: the README documents it and
+    the backtest's reader looks for it, so both must follow this function
+    (F12).
+    """
+    return Path(run_root) / "models" / symbol / f"asof_{asof_compact}"
+
 
 _LGBM_INSTALL_HINT = (
     "LightGBM is not installed for this interpreter.  Create the dedicated "
@@ -144,8 +158,16 @@ def load_candidates(path: str | Path) -> pd.DataFrame:
 def load_bars(path: str | Path) -> pd.DataFrame:
     """Load the market series (Parquet) into the canonical bar frame.
 
-    Accepts either an explicit ``ts_event`` (int64 **nanoseconds**) or a
-    governed-lake ``timestamp`` column (int64 **milliseconds**).
+    **The frame's ``ts_event`` is the bar's CLOSE time**, which is the same
+    convention the D2 candidate log uses (``ts_event`` = the close of the
+    confirmation bar) and the same one the backtest's runner builds.  The
+    governed lake stamps its bars at the **open** (left-open convention), so
+    the loader adds one bar interval to reach the close.
+
+    Keeping one convention everywhere is what lets the engine's outcome join
+    and the ML pipeline's label join agree row for row (F6).  With the two
+    conventions mixed, the label scan starts a bar too late and the two
+    definitions disagree on the intrabar ties.
     """
     p = Path(path)
     if not p.exists():
@@ -153,7 +175,8 @@ def load_bars(path: str | Path) -> pd.DataFrame:
     frame = pd.read_parquet(p)
     if "ts_event" not in frame.columns:
         if "timestamp" in frame.columns:
-            frame["ts_event"] = frame["timestamp"].astype("int64") * 1_000_000
+            open_ns = frame["timestamp"].astype("int64") * 1_000_000
+            frame["ts_event"] = open_ns + _bar_interval_ns(open_ns.to_numpy())
         else:
             raise ValueError(
                 f"bars file {p} has neither 'ts_event' (ns) nor 'timestamp' (ms) column"
@@ -164,6 +187,15 @@ def load_bars(path: str | Path) -> pd.DataFrame:
     if missing:
         raise ValueError(f"bars file {p} is missing required column(s): {missing}")
     return frame.sort_values("ts_event", kind="stable").reset_index(drop=True)
+
+
+def _bar_interval_ns(open_ns: np.ndarray) -> int:
+    """The bar spacing in nanoseconds (the modal gap of a regular series)."""
+    if open_ns.size < 2:
+        return 60_000_000_000
+    deltas = np.diff(open_ns)
+    values, counts = np.unique(deltas, return_counts=True)
+    return int(values[int(np.argmax(counts))])
 
 
 def _infer_bar_interval_minutes(bars: pd.DataFrame) -> int:
@@ -220,6 +252,9 @@ class FoldResult:
     accuracy_test: float | None = None
     metrics: dict = field(default_factory=dict)
     model_dir: str = ""
+    #: The fold directory **relative to the models root** -- the root the
+    #: backtest points at with ``--models-root`` (D3).
+    model_rel_dir: str = ""
 
 
 def _json_safe(value: Any) -> Any:
@@ -281,6 +316,11 @@ def _train_one_fold(
         "seed": seed,
         "deterministic": True,
         "force_row_wise": True,
+        # LightGBM is only reproducible for a **fixed** thread count: with
+        # ``deterministic`` on, the result still depends on how many threads
+        # split the data.  Pinning it makes the trained artefact -- and the
+        # numbers quoted from it -- reproducible run to run.
+        "num_threads": LGBM_NUM_THREADS,
         "verbose": -1,
     }
     dtrain = lgb.Dataset(x_train, label=y_train, feature_name=list(features), free_raw_data=False)
@@ -302,11 +342,71 @@ def _train_one_fold(
     return booster, info
 
 
+def _isotonic_pava(x: np.ndarray, y: np.ndarray) -> dict | None:
+    """Isotonic (monotone, least-squares) calibration by PAVA.
+
+    A fixed absolute gate threshold is only meaningful on **calibrated**
+    probabilities.  LightGBM's raw scores on a 33 % base rate sit in a narrow
+    band around the base rate, so ``P(Win) >= 0.58`` opened in bursts and
+    closed for years at a time (61 of 75 folds approved nothing on ETH 15m).
+
+    The calibration is fitted on the **validation** fold, which is known before
+    the test window opens, so it is causal.  The returned breakpoints are
+    stored in the D3 metadata and applied by the backtest's scorer.
+    """
+    if len(x) == 0 or len(x) != len(y):
+        return None
+    order = np.argsort(x, kind="mergesort")
+    xs = np.asarray(x, dtype="float64")[order]
+    ys = np.asarray(y, dtype="float64")[order]
+    # pool adjacent violators (unit weights -> integer block sizes)
+    values: list[float] = []
+    weights: list[int] = []
+    for v in ys:
+        cur, w = float(v), 1
+        while values and values[-1] > cur:
+            prev_v = values.pop()
+            prev_w = weights.pop()
+            cur = (prev_v * prev_w + cur * w) / (prev_w + w)
+            w += prev_w
+        values.append(cur)
+        weights.append(w)
+    fitted = np.asarray(
+        [v for v, w in zip(values, weights) for _ in range(w)], dtype="float64"
+    )
+    if fitted.size != xs.size:  # pragma: no cover - defensive
+        return None
+    # collapse duplicate scores (a probe callback can tie) into one breakpoint
+    uniq, inverse = np.unique(xs, return_inverse=True)
+    if uniq.size != xs.size:
+        sums = np.zeros(uniq.size)
+        counts = np.zeros(uniq.size)
+        np.add.at(sums, inverse, fitted)
+        np.add.at(counts, inverse, 1.0)
+        fitted = sums / np.maximum(counts, 1.0)
+    return {
+        "x": [float(v) for v in uniq],
+        "y": [float(v) for v in fitted],
+        "n_valid": int(xs.size),
+    }
+
+
+def _apply_calibration(prob: np.ndarray, calibration: dict | None) -> np.ndarray:
+    if not calibration:
+        return prob
+    xs = calibration.get("x") or []
+    ys = calibration.get("y") or []
+    if len(xs) != len(ys) or not xs:
+        return prob
+    return np.interp(prob, xs, ys)
+
+
 def _evaluate(
     booster: Any,
     test: pd.DataFrame,
     features: Sequence[str],
     threshold: float,
+    calibration: dict | None = None,
 ) -> dict:
     """Score the test fold -- **once**, at the very end of the fold's life."""
     if test.empty:
@@ -314,7 +414,10 @@ def _evaluate(
     x = _matrix(test, features)
     y = test["label"].astype("int8").to_numpy()
     score = booster.predict(x, num_iteration=booster.best_iteration)
-    prob = np.asarray(score, dtype="float64")
+    raw = np.asarray(score, dtype="float64")
+    # AUC is rank-invariant, so it is measured on the raw score; the *gate*
+    # is applied to the calibrated probability.
+    prob = _apply_calibration(raw, calibration)
     pred_at_half = (prob >= 0.5).astype(int)
     accuracy = float((pred_at_half == y).mean()) if len(y) else float("nan")
 
@@ -327,7 +430,7 @@ def _evaluate(
     base_expectancy = float(np.nanmean(r)) if len(r) else float("nan")
     pass_expectancy = float(np.nanmean(r[take])) if n_pass else float("nan")
     return {
-        "auc_test": _auc(y, prob),
+        "auc_test": _auc(y, raw),
         "accuracy_test": accuracy,
         "accuracy_test_at_threshold": float(((prob >= threshold).astype(int) == y).mean()),
         "base_rate_test": base_rate,
@@ -338,6 +441,49 @@ def _evaluate(
         "pass_expectancy_r": pass_expectancy,
         "expectancy_lift_r": (pass_expectancy - base_expectancy),
     }
+
+
+def _model_diagnostics(
+    booster: Any,
+    train: pd.DataFrame,
+    features: Sequence[str],
+) -> dict:
+    """The artefacts the degradation monitor needs (L4 §F.3).
+
+    * the **training prediction distribution** -- the live fold's P(Win) is
+      compared against it to detect a distribution drift;
+    * the **feature importances** -- the churn between consecutive folds is
+      the third degradation signal.
+
+    Both are properties of the *model that was actually used*, so they are
+    recorded in the fold's D3 metadata.
+    """
+    out: dict = {}
+    if not train.empty:
+        x = _matrix(train, features)
+        prob = np.asarray(
+            booster.predict(x, num_iteration=booster.best_iteration), dtype=np.float64
+        )
+        finite = prob[np.isfinite(prob)]
+        if finite.size:
+            out["train_prediction_distribution"] = {
+                "mean": float(finite.mean()),
+                "sd": float(finite.std(ddof=1)) if finite.size > 1 else 0.0,
+                "n": int(finite.size),
+            }
+    try:
+        gains = np.asarray(
+            booster.feature_importance(importance_type="gain"), dtype=np.float64
+        )
+    except Exception:  # pragma: no cover - depends on the runtime
+        gains = np.empty(0, dtype=np.float64)
+    if gains.size:
+        order = np.argsort(gains)[::-1][:10]
+        out["feature_importances_top10"] = [
+            [str(features[i]) if i < len(features) else f"feature_{i}", float(gains[i])]
+            for i in order
+        ]
+    return out
 
 
 def _prepare(frame: pd.DataFrame, features: Sequence[str]) -> pd.DataFrame:
@@ -356,8 +502,14 @@ def plan_folds(
     train_months: int = TRAIN_MONTHS,
     valid_months: int = VALID_MONTHS,
     test_months: int = TEST_MONTHS,
+    horizon_bars: int | None = None,
 ) -> list[Fold]:
-    """The fold plan of a run (thin wrapper around ``splits.make_folds``)."""
+    """The fold plan of a run (thin wrapper around ``splits.make_folds``).
+
+    ``horizon_bars`` is the label horizon **in bars**, so the purge and the
+    embargo follow the horizon the labels were built with rather than the
+    default constant (F7).
+    """
     return make_folds(
         labelled,
         train_months=train_months,
@@ -365,6 +517,7 @@ def plan_folds(
         test_months=test_months,
         embargo_minutes=embargo_minutes,
         bar_interval_minutes=bar_interval_minutes,
+        horizon_bars=horizon_bars,
     )
 
 
@@ -376,6 +529,7 @@ def train_walk_forward(
     timeframe: str = "1m",
     run_root: str | Path = "artifacts",
     decision_threshold: float = DECISION_THRESHOLD,
+    gate_quantile: float = 0.95,
     extra_features: bool = False,
     horizon_bars: int | None = None,
     embargo_minutes: int | None = None,
@@ -387,6 +541,10 @@ def train_walk_forward(
     Returns the run report (also written to ``walk_forward_index.json``).
     """
     run_root = Path(run_root)
+    # The D3 layout is ``{run_root}/models/{symbol}/{asof_YYYYMMDD}/``, and
+    # the backtest's default ``--models-root`` is ``artifacts/models`` -- the
+    # same directory when the run root is ``artifacts`` (F2).
+    models_root = run_root / "models"
     interval = bar_interval_minutes
     if interval is None:
         interval = (
@@ -422,6 +580,7 @@ def train_walk_forward(
         labelled,
         embargo_minutes=embargo_minutes,
         bar_interval_minutes=interval,
+        horizon_bars=horizon_bars,
     )
 
     report: dict[str, Any] = {
@@ -492,12 +651,34 @@ def train_walk_forward(
 
         if result.status == "trained":
             booster, info = _train_one_fold(lgb, train, valid, used)
-            metrics = _evaluate(booster, test, used, decision_threshold)
-            result.metrics = {**info, **metrics}
+            # --- calibration + the gate threshold (validation fold) -------
+            calibration = None
+            gate_threshold = float(decision_threshold)
+            if not valid.empty:
+                vp = np.asarray(
+                    booster.predict(_matrix(valid, used), num_iteration=booster.best_iteration),
+                    dtype="float64",
+                )
+                vy = valid["label"].astype("int8").to_numpy()
+                calibration = _isotonic_pava(vp, vy)
+                vp_cal = _apply_calibration(vp, calibration)
+                if vp_cal.size:
+                    gate_threshold = float(np.quantile(vp_cal, float(gate_quantile)))
+            metrics = _evaluate(
+                booster, test, used, gate_threshold, calibration=calibration
+            )
+            metrics["gate_threshold"] = gate_threshold
+            metrics["gate_quantile"] = float(gate_quantile)
+            metrics["calibration"] = calibration
+            result.metrics = {
+                **info,
+                **metrics,
+                **_model_diagnostics(booster, train, used),
+            }
             result.auc_test = metrics.get("auc_test")
             result.accuracy_test = metrics.get("accuracy_test")
 
-            model_dir = run_root / "models" / symbol / fold.asof_compact
+            model_dir = model_dir_for(run_root, symbol, fold.asof_compact)
             model_dir.mkdir(parents=True, exist_ok=True)
             booster.save_model(
                 str(model_dir / MODEL_FILENAME), num_iteration=booster.best_iteration
@@ -516,7 +697,11 @@ def train_walk_forward(
             (model_dir / META_FILENAME).write_text(
                 json.dumps(_json_safe(meta), indent=2, allow_nan=False), encoding="utf-8"
             )
+            # The D3 layout is ``artifacts/models/{symbol}/{asof_YYYYMMDD}/``,
+            # so the index records the path **relative to the models root** --
+            # that is the root the backtest's ``--models-root`` points at.
             result.model_dir = str(model_dir)
+            result.model_rel_dir = f"{symbol}/asof_{fold.asof_compact}"
 
         results.append(result)
 
@@ -526,6 +711,12 @@ def train_walk_forward(
             (Path(result.model_dir) / INDEX_FILENAME).write_text(
                 json.dumps(_json_safe(index), indent=2, allow_nan=False), encoding="utf-8"
             )
+    # The index lives beside the models, under the D3 layout, so that the
+    # backtest finds it at its default ``--models-root`` (F2).
+    models_root.mkdir(parents=True, exist_ok=True)
+    (models_root / symbol / INDEX_FILENAME).write_text(
+        json.dumps(_json_safe(index), indent=2, allow_nan=False), encoding="utf-8"
+    )
     run_root.mkdir(parents=True, exist_ok=True)
     (run_root / INDEX_FILENAME).write_text(
         json.dumps(_json_safe(index), indent=2, allow_nan=False), encoding="utf-8"
@@ -561,6 +752,9 @@ def _meta_json(
         "embargo_minutes": fold.embargo_minutes,
         "feature_list": list(features),
         "decision_threshold": decision_threshold,
+        "gate_threshold": result.metrics.get("gate_threshold"),
+        "gate_quantile": result.metrics.get("gate_quantile"),
+        "calibration": result.metrics.get("calibration"),
         "n_train": result.n_train,
         "n_valid": result.n_valid,
         "n_test": result.n_test,
@@ -574,6 +768,12 @@ def _meta_json(
         "bar_interval_minutes": int(bar_interval_minutes),
         "scale_pos_weight": result.metrics.get("scale_pos_weight"),
         "best_iteration": result.metrics.get("best_iteration"),
+        # the degradation monitor's inputs (L4 §F.3): the training
+        # prediction distribution and the feature importances
+        "train_prediction_distribution": result.metrics.get(
+            "train_prediction_distribution"
+        ),
+        "feature_importances_top10": result.metrics.get("feature_importances_top10"),
         "base_rate_train": (
             result.positives_train / result.n_train if result.n_train else None
         ),
@@ -582,6 +782,9 @@ def _meta_json(
         "n_pass": result.metrics.get("n_pass"),
         "pass_win_rate": result.metrics.get("pass_win_rate"),
         "expectancy_r_test": result.metrics.get("expectancy_r_test"),
+        # the model's lift over the base rate -- A3's input (a high-AUC model
+        # with no lift has learned the cost, not the edge)
+        "expectancy_lift_r": result.metrics.get("expectancy_lift_r"),
         "pass_expectancy_r": result.metrics.get("pass_expectancy_r"),
         "accuracy_test_definition": "accuracy of the classifier's own argmax (prob >= 0.5)",
         "accounting_note": (
@@ -613,9 +816,9 @@ def _index_json(report: dict, results: Sequence[FoldResult]) -> dict:
                 **r.fold.to_dict(),
                 "status": r.status,
                 "reason": r.reason,
-                "model_dir": r.model_dir,
-                "model_file": f"{r.model_dir}/{MODEL_FILENAME}" if r.model_dir else None,
-                "meta_file": f"{r.model_dir}/{META_FILENAME}" if r.model_dir else None,
+                "model_dir": r.model_rel_dir or r.model_dir,
+                "model_file": f"{r.model_rel_dir}/{MODEL_FILENAME}" if r.model_rel_dir else None,
+                "meta_file": f"{r.model_rel_dir}/{META_FILENAME}" if r.model_rel_dir else None,
                 "auc_test": r.auc_test,
                 "accuracy_test": r.accuracy_test,
                 "metrics": r.metrics,
@@ -633,12 +836,24 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="python -m dodgys_dd_quant.ml_pipeline.train_meta_labeler",
         description="Rolling walk-forward meta-labeler (D3 artefact producer).",
     )
-    parser.add_argument("--candidates", required=True, help="D2 candidate log (Parquet)")
+    parser.add_argument(
+        "--candidates",
+        default=None,
+        help="D2 candidate log (Parquet); defaults to the rule-only archive "
+             "logs/rule_candidates/candidates.parquet when it exists",
+    )
     parser.add_argument("--bars", default=None, help="market series (Parquet)")
     parser.add_argument("--symbol", default=None, help="symbol id (default: from the log)")
     parser.add_argument("--timeframe", default="1m")
     parser.add_argument("--run-root", default="artifacts", help="run root (D3: artifacts/)")
     parser.add_argument("--decision-threshold", type=float, default=DECISION_THRESHOLD)
+    parser.add_argument(
+        "--gate-quantile",
+        type=float,
+        default=0.95,
+        help="the share of the validation fold the gate admits (0.95 = top 5%%); "
+             "the resulting probability is stored as the fold's gate_threshold",
+    )
     parser.add_argument("--horizon-bars", type=int, default=None, help="label horizon in bars")
     parser.add_argument("--embargo-minutes", type=int, default=None)
     parser.add_argument("--bar-interval-minutes", type=int, default=None)
@@ -651,6 +866,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.candidates is None:
+        default = Path("logs/rule_candidates/candidates.parquet")
+        if not default.exists():
+            raise SystemExit(
+                "no --candidates given and logs/rule_candidates/candidates.parquet "
+                "does not exist; run the matrix first (dodgys_dd_quant.backtest.matrix)"
+            )
+        args.candidates = str(default)
+        print(f"candidates: {default} (the rule-only archive)")
     candidates = load_candidates(args.candidates)
     bars = load_bars(args.bars) if args.bars else None
     symbol = args.symbol
@@ -668,6 +892,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeframe=args.timeframe,
             run_root=args.run_root,
             decision_threshold=args.decision_threshold,
+            gate_quantile=args.gate_quantile,
             extra_features=args.extra_features,
             horizon_bars=args.horizon_bars,
             embargo_minutes=args.embargo_minutes,
@@ -718,6 +943,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"pass {m.get('n_pass')}  pass_win {m.get('pass_win_rate')}  "
             f"E[R] base {m.get('expectancy_r_test')}  E[R] gated {m.get('pass_expectancy_r')}"
         )
+    # The two E[R] figures above are **census** statistics: every candidate in
+    # the test fold is scored as if it were a trade, so many of them are open
+    # at the same time.  D4 records that the concurrent arm's t-statistic
+    # (t = 15.28) is an artefact of exactly that, and that only the
+    # one-position-at-a-time arm may be quoted.  These numbers are printed
+    # for diagnosis and must not be read as a result.
+    print(
+        "\nNOTE: the E[R] figures above are a CENSUS over the test fold -- every\n"
+        "      candidate is scored as if it were an open trade, so many overlap in\n"
+        "      time.  They are NOT a result: D4 shows the concurrent arm's\n"
+        "      t-statistic is an artefact of that.  Quote only the\n"
+        "      one-position-at-a-time portfolio from the backtest (D4)."
+    )
     print(f"\nartefacts: {Path(args.run_root) / 'models' / report['symbol']}/<asof>/")
     return 0
 

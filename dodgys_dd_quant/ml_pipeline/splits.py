@@ -144,6 +144,7 @@ def make_folds(
     step_months: int = FOLD_STEP_MONTHS,
     embargo_minutes: int | None = None,
     bar_interval_minutes: int = DEFAULT_BAR_INTERVAL_MINUTES,
+    horizon_bars: int | None = None,
 ) -> list[Fold]:
     """Build the rolling, purged, embargoed walk-forward folds.
 
@@ -163,6 +164,12 @@ def make_folds(
     bar_interval_minutes:
         The bar spacing of the traded series, used to convert the holding
         period into minutes.
+    horizon_bars:
+        The label horizon **in bars**, when it differs from the default
+        240-bar one.  The embargo and the purge must follow the horizon the
+        labels were actually built with, not a constant: a run with a
+        1000-bar horizon would otherwise leave a training label resolving
+        inside the validation window (F7).
 
     Returns
     -------
@@ -174,6 +181,11 @@ def make_folds(
         raise ValueError("train/valid/test/step months must all be positive")
 
     horizon_minutes = max_holding_minutes(bar_interval_minutes)
+    if horizon_bars is not None:
+        # The horizon the labels were actually built with, in bars.  The
+        # purge and the embargo must follow *it*, not the default constant
+        # (F7).
+        horizon_minutes = int(horizon_bars) * int(bar_interval_minutes)
     if embargo_minutes is None:
         embargo_minutes = horizon_minutes
     embargo_minutes = int(embargo_minutes)
@@ -182,7 +194,7 @@ def make_folds(
             f"embargo_minutes={embargo_minutes} is smaller than the maximum holding "
             f"period ({horizon_minutes} min = {horizon_minutes // max(1, bar_interval_minutes)} "
             f"bars). The embargo must be at least the maximum holding period, otherwise a "
-            "training label can resolve inside the validation window."
+            f"training label can resolve inside the validation window."
         )
 
     ts = candidates["ts_event"].astype("int64").to_numpy()

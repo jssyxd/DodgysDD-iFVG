@@ -35,12 +35,23 @@ __all__ = [
     "load_bars",
     "atr_wilder",
     "causal_pivots",
+    "EqualLevel",
+    "EqualLevelStore",
     "FvgSet",
     "detect_fvg",
+    "HtfFvgZone",
+    "HtfFvgZones",
     "SweepDetector",
     "SweepEvent",
     "PivotLevels",
     "SessionExtremes",
+    "EqualLevel",
+    "EqualLevelStore",
+    "HtfFvgZone",
+    "HtfFvgZones",
+    "HtfLevel",
+    "HtfSeries",
+    "aggregate_htf",
 ]
 
 
@@ -109,9 +120,16 @@ def load_bars(path: str | Path, symbol: str = "", timeframe: str = "1m") -> Bars
     table = pq.read_table(path)
     cols = set(table.column_names)
 
-    ts_col = "timestamp" if "timestamp" in cols else None
-    if ts_col is None:
-        raise ValueError(f"{path}: no 'timestamp' column (found {sorted(cols)})")
+    # the lake has two names for the same quantity: older lanes call it
+    # ``timestamp``, the canonical contract (AGENTS.md) calls it ``ts_event``
+    if "timestamp" in cols:
+        ts_col = "timestamp"
+    elif "ts_event" in cols:
+        ts_col = "ts_event"
+    else:
+        raise ValueError(
+            f"{path}: no 'timestamp' or 'ts_event' column (found {sorted(cols)})"
+        )
 
     ts = table.column(ts_col).to_numpy()
     if np.issubdtype(ts.dtype, np.integer):
@@ -296,12 +314,16 @@ def detect_fvg(
     """Detect three-candle FVGs on closed bars.
 
     Geometry is strict and wick-based (``DOC L121``, ``pine:L354-356``):
-    ``low[c] > high[c-2]`` for a bullish gap, ``high[c] < low[c-2]`` for a
-    bearish one.  A zero-width gap is not a gap.
+    ``low[c] > high[c-2]`` for a bullish gap, ``high[c] < low[c-2]`` for
+    a bearish one.  A zero-width gap is not a gap.
 
     ``min_gap_atr_mult`` applies the doc's floor ``gap > mult * ATR(14)``,
     anchored at the gap's **newest** bar (RULE_SPEC A02).  ``None`` disables
     the floor, which is what the reference replica does (it has no ATR at all).
+
+    The floor may also be given **per candle** (an array of the same length
+    as ``bars``), which is how the volatility regime tightens or relaxes it
+    band by band (L107-109).
     """
     n = len(bars)
     oldest = np.empty(0, dtype=np.int64)
@@ -330,7 +352,14 @@ def detect_fvg(
     if min_gap_atr_mult is not None and atr is not None:
         ref = atr[c_idx]
         width = high_edge - low_edge
-        ok = np.isfinite(ref) & (ref > 0.0) & (width > min_gap_atr_mult * ref)
+        mult = np.asarray(min_gap_atr_mult, dtype=np.float64)
+        if mult.ndim == 0:
+            floor = float(mult) * ref
+        else:
+            # A per-candle floor: the regime tightens or relaxes the gap
+            # filter band by band (L107-109).
+            floor = mult[c_idx] * ref
+        ok = np.isfinite(ref) & (ref > 0.0) & (width > floor)
         c_idx, a_idx = c_idx[ok], a_idx[ok]
         low_edge, high_edge = low_edge[ok], high_edge[ok]
         is_bull = is_bull[ok]
@@ -527,19 +556,407 @@ def session_extremes(
 
 
 def _utc_offsets(ts: np.ndarray, timezone: str) -> np.ndarray:
-    """UTC offset (ns) of ``timezone`` at each timestamp (DST-aware)."""
+    """UTC offset (ns) of ``timezone`` at each timestamp (DST-aware).
+
+    The offset only changes at a DST transition, so it is derived once per
+    **hour**: a transition happens at a whole local hour, and a per-day
+    derivation would be wrong for the hours of the transition day itself.
+    """
     from datetime import datetime, timedelta, timezone as _tz
 
     from zoneinfo import ZoneInfo
 
     tz = ZoneInfo(timezone)
     seconds = ts.astype("datetime64[ns]").astype("datetime64[s]").astype(np.int64)
-    # the offset only changes at DST transitions -> derive it per unique day
-    days = seconds // 86_400
-    uniq, inverse = np.unique(days, return_inverse=True)
-    day_offsets = np.zeros(uniq.shape[0], dtype=np.int64)
-    for i, d in enumerate(uniq):
-        dt = datetime(1970, 1, 1) + timedelta(seconds=int(d) * 86_400)
+    hours = seconds // 3600
+    uniq, inverse = np.unique(hours, return_inverse=True)
+    hour_offsets = np.zeros(uniq.shape[0], dtype=np.int64)
+    for i, h in enumerate(uniq):
+        dt = datetime(1970, 1, 1) + timedelta(seconds=int(h) * 3600)
         off = dt.replace(tzinfo=_tz.utc).astimezone(tz).utcoffset() or timedelta(0)
-        day_offsets[i] = int(off.total_seconds())
-    return day_offsets[inverse].astype("timedelta64[ns]").astype(np.int64)
+        hour_offsets[i] = int(off.total_seconds())
+    # the offsets are in **seconds**; the timestamps are in nanoseconds
+    return (hour_offsets[inverse] * 1_000_000_000).astype(np.int64)
+
+
+# ---------------------------------------------------------------------------
+# Equal highs / equal lows (L2 row 5)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EqualLevel:
+    """A cluster of near-equal highs (or lows).
+
+    ``price`` is the cluster's reference price, ``count`` how many observations
+    joined it and ``known_at`` the bar at which the cluster became usable.
+    """
+
+    price: float
+    direction: int
+    known_at: int
+    count: int = 1
+
+    def as_dict(self) -> dict:
+        return {
+            "price": self.price,
+            "direction": self.direction,
+            "known_at": self.known_at,
+            "count": self.count,
+        }
+
+
+class EqualLevelStore:
+    """The doc's **EQH / EQL** level source (L2 row 5).
+
+    The doc's sweep object is a *cluster* of equal highs (or lows), not a
+    single pivot: several touches at the same price are one level of
+    liquidity.  The store therefore clusters near-equal observations and,
+    like :class:`SweepDetector`, **consumes** a level when it is swept --
+    a level is raided once.
+
+    The tolerance is expressed as a fraction of the ATR (the doc's "the same
+    price" is a price *band*, and the band's width has to scale with the
+    instrument).  When no ATR is supplied the tolerance falls back to the
+    same fraction of the level's own price, which keeps the store usable
+    without an ATR series.
+    """
+
+    def __init__(
+        self,
+        tolerance_atr_frac: float = 0.10,
+        *,
+        atr: float | None = None,
+        max_levels: int = MAX_SESSIONS,
+    ) -> None:
+        if tolerance_atr_frac <= 0.0:
+            raise ValueError("tolerance_atr_frac must be positive")
+        self.tolerance_atr_frac = float(tolerance_atr_frac)
+        self.atr = None if atr is None else float(atr)
+        self.max_levels = int(max_levels)
+        self._levels: list[EqualLevel] = []
+        self.events: list[SweepEvent] = []
+
+    # --- construction ----------------------------------------------------
+
+    def _tolerance(self, price: float) -> float:
+        scale = self.atr if self.atr is not None else abs(price)
+        return self.tolerance_atr_frac * scale
+
+    def add_level(self, price: float, direction: int, known_at: int) -> EqualLevel:
+        """Register a level, clustering it with a near-equal one."""
+        if not math.isfinite(price):
+            raise ValueError("a level price must be finite")
+        direction = 1 if direction > 0 else -1
+        tolerance = self._tolerance(price)
+        for index, level in enumerate(self._levels):
+            if level.direction != direction:
+                continue
+            if abs(level.price - price) <= tolerance:
+                merged = EqualLevel(
+                    price=(level.price * level.count + price) / (level.count + 1),
+                    direction=direction,
+                    known_at=min(level.known_at, int(known_at)),
+                    count=level.count + 1,
+                )
+                self._levels[index] = merged
+                return merged
+        level = EqualLevel(
+            price=float(price),
+            direction=direction,
+            known_at=int(known_at),
+        )
+        self._levels.append(level)
+        if len(self._levels) > self.max_levels:
+            self._levels.pop(0)
+        return level
+
+    def levels(self) -> list[EqualLevel]:
+        """The live levels, oldest first."""
+        return list(self._levels)
+
+    # --- consumption ------------------------------------------------------
+
+    def update(self, bar: int, high: float, low: float, close: float) -> list[SweepEvent]:
+        """Test the live levels against ``bar`` and consume the ones pierced."""
+        hits: list[SweepEvent] = []
+        keep: list[EqualLevel] = []
+        for level in self._levels:
+            if bar <= level.known_at:
+                keep.append(level)
+                continue
+            if level.direction > 0:
+                pierced = high > level.price and close < level.price
+            else:
+                pierced = low < level.price and close > level.price
+            if not pierced:
+                keep.append(level)
+                continue
+            hits.append(
+                SweepEvent(
+                    bar=int(bar),
+                    direction=level.direction,
+                    level=level.price,
+                    known_at=level.known_at,
+                )
+            )
+        self._levels = keep
+        self.events.extend(hits)
+        return hits
+
+
+# ---------------------------------------------------------------------------
+# Unreclaimed HTF FVG zones (L2 row 3)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class HtfFvgZone:
+    """One unreclaimed zone on the higher timeframe."""
+
+    bottom: float
+    top: float
+    bullish: bool
+    opened_bar: int
+
+    def as_dict(self) -> dict:
+        return {
+            "bottom": self.bottom,
+            "top": self.top,
+            "bullish": self.bullish,
+            "opened_bar": self.opened_bar,
+        }
+
+
+class HtfFvgZones:
+    """The doc's **unreclaimed 15m / 1H FVG zones** (L2 row 3).
+
+    Two kinds of zone are tracked, both published from **closed** HTF bars only
+    (the reference publishes its HTF zone one bar late, so a zone may never be
+    read from a bar that has not closed):
+
+    * the **three-candle FVG** -- ``low[i] > high[i-2]`` leaves the band
+      ``[high[i-2], low[i]]`` unfilled;
+    * the **opening band** -- a bar whose open lies outside its own range
+      opened discontinuously, so the band between the opening print and the
+      extreme is not fully traded.
+
+    A zone stays *unreclaimed* until a later bar trades outside it: price
+    above its top (a bullish zone is spent) or below its bottom.
+    """
+
+    def __init__(self, timeframe_minutes: int = 15, *, max_zones: int = 3) -> None:
+        if timeframe_minutes <= 0:
+            raise ValueError("timeframe_minutes must be positive")
+        self.timeframe_minutes = int(timeframe_minutes)
+        self.max_zones = int(max_zones)
+        self._bars: list["HtfFvgZones.Bar"] = []
+        self._zones: list[HtfFvgZone] = []
+
+    @dataclass(frozen=True)
+    class Bar:
+        """One **closed** HTF bar."""
+
+        ts: int
+        open: float
+        high: float
+        low: float
+        close: float
+
+    # --- publication ------------------------------------------------------
+
+    def update(self, bars: "list[HtfFvgZones.Bar] | tuple[HtfFvgZones.Bar, ...]") -> list[HtfFvgZone]:
+        """Fold newly closed HTF bars in and publish the zones they create."""
+        for bar in bars:
+            self._bars.append(bar)
+            index = len(self._bars) - 1
+            zone = self._three_candle_zone(index)
+            if zone is None:
+                zone = self._opening_band(index)
+            if zone is not None:
+                self._zones.append(zone)
+                self._trim()
+            self._mitigate(index)
+        return [zone for zone in self._zones if self._live(zone)]
+
+    def _three_candle_zone(self, index: int) -> HtfFvgZone | None:
+        if index < 2:
+            return None
+        first = self._bars[index - 2]
+        last = self._bars[index]
+        if last.low > first.high:
+            return HtfFvgZone(
+                bottom=first.high, top=last.low, bullish=True, opened_bar=index
+            )
+        if last.high < first.low:
+            return HtfFvgZone(
+                bottom=last.high, top=first.low, bullish=False, opened_bar=index
+            )
+        return None
+
+    def _opening_band(self, index: int) -> HtfFvgZone | None:
+        bar = self._bars[index]
+        if bar.open < bar.low:
+            return HtfFvgZone(
+                bottom=bar.open, top=bar.high, bullish=False, opened_bar=index
+            )
+        if bar.open > bar.high:
+            return HtfFvgZone(
+                bottom=bar.low, top=bar.open, bullish=True, opened_bar=index
+            )
+        return None
+
+    def _mitigate(self, index: int) -> None:
+        bar = self._bars[index]
+        live: list[HtfFvgZone] = []
+        for zone in self._zones:
+            if zone.opened_bar >= index:
+                live.append(zone)
+                continue
+            if bar.high > zone.top or bar.low < zone.bottom:
+                continue  # spent
+            live.append(zone)
+        self._zones = live
+
+    def _live(self, zone: HtfFvgZone) -> bool:
+        return any(zone is other for other in self._zones)
+
+    def _trim(self) -> None:
+        while len(self._zones) > self.max_zones:
+            self._zones.pop(0)
+
+    # --- reading ----------------------------------------------------------
+
+    def unreclaimed(self) -> list[HtfFvgZone]:
+        """The zones price has not yet spent."""
+        return list(self._zones)
+
+
+# ---------------------------------------------------------------------------
+# Higher-timeframe aggregation (L2 rows 3 and 5, audit D-06 / D-08)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class HtfLevel:
+    """One swing level of the higher timeframe.
+
+    ``known_at`` is the index of the **1-minute** bar at whose close the level
+    became knowable: the reference detects the three-bar fractal only when the
+    *next* higher-timeframe bucket has closed (``pine:L616-621``), so the level
+    is one bucket late by construction and never looks ahead.
+    """
+
+    price: float
+    direction: int       # +1 = a swing high, -1 = a swing low
+    known_at: int
+
+
+@dataclass(frozen=True)
+class HtfSeries:
+    """The hand-aggregated higher-timeframe view of a 1-minute series.
+
+    The reference builds its HTF view by hand: the running high/low of the
+    current bucket is pushed when the bucket changes (``pine:L567-585``).  The
+    same aggregation is reproduced here, together with the two products the
+    reference derives from it: the **unreclaimed FVG zones** (row 3) and the
+    **three-bar fractal levels** its sweep detector consumes (row 5).
+    """
+
+    bucket_of_bar: np.ndarray       # per 1-minute bar: its bucket index
+    closed_buckets: np.ndarray      # per 1-minute bar: buckets closed by its close
+    bars: tuple[HtfFvgZones.Bar, ...]
+    zones: tuple[tuple[HtfFvgZone, ...], ...]   # per closed bucket: the live zones
+    levels: tuple[HtfLevel, ...]                # the three-bar fractal levels
+
+    def zones_at(self, bar: int) -> tuple[HtfFvgZone, ...]:
+        """The unreclaimed zones knowable at the close of ``bar``."""
+        if bar < 0 or bar >= len(self.closed_buckets):
+            return ()
+        closed = int(self.closed_buckets[bar])
+        if closed <= 0:
+            return ()
+        return self.zones[closed - 1]
+
+
+def aggregate_htf(bars: Bars, timeframe_minutes: int = 15) -> HtfSeries:
+    """Aggregate closed bars into the reference's hand-built HTF view.
+
+    The buckets are UTC-aligned and a bucket is only usable once its **last**
+    constituent bar has closed, so nothing in the result is knowable earlier
+    than the data allows (``pine:L567-585``).
+    """
+    if timeframe_minutes <= 0:
+        raise ValueError("timeframe_minutes must be positive")
+    n = len(bars)
+    bucket_ns = int(timeframe_minutes) * 60_000_000_000
+    if n == 0:
+        return HtfSeries(
+            bucket_of_bar=np.zeros(0, dtype=np.int64),
+            closed_buckets=np.zeros(0, dtype=np.int64),
+            bars=(),
+            zones=(),
+            levels=(),
+        )
+
+    ts = bars.ts
+    bucket_ids = (ts // bucket_ns).astype(np.int64)
+    # the bucket of every bar, compressed to 0..k-1 (gaps leave no bucket)
+    unique_buckets, inverse = np.unique(bucket_ids, return_inverse=True)
+    bucket_of_bar = inverse.astype(np.int64)
+
+    # --- the closed HTF bars ----------------------------------------------
+    htf_bars: list[HtfFvgZones.Bar] = []
+    bucket_last_bar: list[int] = []
+    for b in range(len(unique_buckets)):
+        members = np.flatnonzero(bucket_of_bar == b)
+        first = int(members[0])
+        last = int(members[-1])
+        htf_bars.append(
+            HtfFvgZones.Bar(
+                ts=int(ts[first]),
+                open=float(bars.open[first]),
+                high=float(bars.high[members].max()),
+                low=float(bars.low[members].min()),
+                close=float(bars.close[last]),
+            )
+        )
+        bucket_last_bar.append(last)
+
+    # --- how many buckets are closed at each 1-minute bar's close ----------
+    closed_buckets = np.zeros(n, dtype=np.int64)
+    last_index = np.asarray(bucket_last_bar, dtype=np.int64)
+    # a bucket closes at the close of its last member bar
+    running = 0
+    closes = {int(idx): pos + 1 for pos, idx in enumerate(last_index)}
+    for j in range(n):
+        running = max(running, closes.get(j, 0))
+        closed_buckets[j] = running
+
+    # --- the unreclaimed zones over time ----------------------------------
+    store = HtfFvgZones(timeframe_minutes=timeframe_minutes)
+    zones_per_bucket: list[tuple[HtfFvgZone, ...]] = []
+    for pos, bar in enumerate(htf_bars):
+        store.update([bar])
+        zones_per_bucket.append(tuple(store.unreclaimed()))
+
+    # --- the three-bar fractal levels (the reference's sweep object) ------
+    levels: list[HtfLevel] = []
+    highs = [b.high for b in htf_bars]
+    lows = [b.low for b in htf_bars]
+    for pos in range(2, len(htf_bars)):
+        # the middle bucket of the triple is the pivot; it becomes knowable
+        # when the *next* bucket closes
+        known_at = bucket_last_bar[pos]
+        if highs[pos - 1] >= highs[pos - 2] and highs[pos - 1] >= highs[pos]:
+            levels.append(HtfLevel(price=highs[pos - 1], direction=1, known_at=known_at))
+        if lows[pos - 1] <= lows[pos - 2] and lows[pos - 1] <= lows[pos]:
+            levels.append(HtfLevel(price=lows[pos - 1], direction=-1, known_at=known_at))
+
+    return HtfSeries(
+        bucket_of_bar=bucket_of_bar,
+        closed_buckets=closed_buckets,
+        bars=tuple(htf_bars),
+        zones=tuple(zones_per_bucket),
+        levels=tuple(levels),
+    )

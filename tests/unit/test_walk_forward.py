@@ -63,8 +63,11 @@ class _StubScorer:
 
     available = True
 
-    def __init__(self, p: float = 0.9) -> None:
+    def __init__(self, p: float = 0.9, threshold: float = 0.58) -> None:
         self.p = p
+        # the walk-forward reads the *scorer's* threshold (a quantile-gated
+        # fold carries its own); the stub mimics the contract
+        self.threshold = threshold
         self.calls = 0
 
     def score(self, candidate) -> float:

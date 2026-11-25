@@ -75,6 +75,22 @@ DOC_INVERSION_WINDOW: Final[tuple[int, int]] = (
 )
 
 # ---------------------------------------------------------------------------
+# The label horizon
+# ---------------------------------------------------------------------------
+#
+# The horizon is the **maximum holding period**: a candidate that has hit
+# neither its stop nor its target within this many bars is *censored*
+# (``label = -1``), not left open forever.  Capping the resolution is what
+# makes the horizon -- and therefore the walk-forward purge and embargo --
+# well defined (L4 §C.2).
+#
+# It lives here, in the strategy's own constants, because the rule engine
+# applies it when it resolves a candidate's outcome; the ML pipeline
+# re-exports it so both sides use one number.
+LABEL_HORIZON_BARS: Final[int] = 240
+
+
+# ---------------------------------------------------------------------------
 # Meta-label gate and risk
 # ---------------------------------------------------------------------------
 
@@ -126,20 +142,6 @@ KILLZONE_CRYPTO_UTC: Final[tuple[str, str]] = ("00:00", "02:00")
 #: VXN regime bin edges (DOC L265-266): ``0 / 18 / 28 / 200``.
 VXN_REGIME_BINS: Final[tuple[float, float, float, float]] = (0.0, 18.0, 28.0, 200.0)
 
-#: Crypto DVOL regime bin edges.  The doc names DVOL as the crypto regime
-#: index but specifies **no bands**, and the VXN edges are meaningless on the
-#: DVOL scale: the DVOL daily close runs 34–90 (p50 = 51), so every reading
-#: fell above 28 and the crypto regime read **81.8 % "high", 0 % "normal"** —
-#: which silently removed the ``vxn_regime_normal`` checklist condition and
-#: collapsed the checklist to 3.6 % of the candidates on BTCUSDT.
-#:
-#: **Calibration (2026-11-24, post-hoc):** the edges are the DVOL quantiles
-#: that reproduce the *VXN's own* daily occupancy on the lake's VXN series
-#: (low 35.6 %, normal 48.5 %, high 15.9 %).  The rule is "match the
-#: reference regime's occupancy", not "pick round numbers", so the two indices
-#: mean the same thing.
-DVOL_REGIME_BINS: Final[tuple[float, float, float, float]] = (0.0, 45.6, 60.1, 200.0)
-
 #: Regime labels: 0 low-vol range, 1 normal trend, 2 high-vol panic.
 REGIME_LOW: Final[int] = 0
 REGIME_NORMAL: Final[int] = 1
@@ -149,6 +151,32 @@ REGIME_HIGH: Final[int] = 2
 #: defines three labels, so this only refines regime 2 and is reported, never
 #: used as a fourth label.
 VXN_REGIME_EXTREME: Final[float] = 200.0
+
+# ---------------------------------------------------------------------------
+# Vision layer (D6 -- the corrected alignment contract)
+# ---------------------------------------------------------------------------
+#
+# The discussion's gate was **IoU > 0.75 on the vertical price axis**
+# (``doc:L139``).  That metric is *inverted*: the rule engine measures the
+# FVG **price gap** and the shipped detector annotates the **third candle's
+# body**, and those two objects are disjoint by construction -- so a
+# *perfect* detection scores **IoU = 0.00**.  Measured on the detector's own
+# labels: median 0.0000, 87.9 % exactly zero, 0.65 % above 0.75.
+#
+# D6 replaces it with the **2-D box IoU against the third candle's body**,
+# where a perfect match scores 1.0.  The threshold is then *calibrated*, not
+# inherited: against the detector's own ground-truth boxes the achievable
+# 2-D IoU has a median of **0.393** (mean 0.417, p10 0.200, p90 0.652), so
+# 0.75 would reject **98 %** of the model's correct labels and 0.50 still
+# rejects two thirds of them.  The band that admits most correct detections
+# is ~0.30-0.35; 0.30 is the pre-registered default (L1 §C.4).
+#
+# The gate is three-part and the IoU is its **weakest** condition:
+#   pass  <=>  class_match AND bar_index_delta == 0 AND vision_iou >= tau
+# The class match is categorical and the bar-index delta an exact integer
+# test; the IoU depends on the annotation convention.
+VISION_BODY_IOU_THRESHOLD: Final[float] = 0.30
+
 
 # ---------------------------------------------------------------------------
 # Checklist (D8 — report, never filter)
@@ -195,6 +223,11 @@ EQUAL_LEVEL_ATR_TOL: Final[float] = 0.10
 #: The doc's checklist requires a liquidity target at *at least* 2R (DOC L126).
 LIQUIDITY_TARGET_MIN_R: Final[float] = 2.0
 
+#: The reference keeps at most ``MAX_TRACKED_SETUPS`` candidates **per
+#: direction** in its tracking array; the oldest is dropped when the array
+#: overflows and can then never trigger (``pine:L78``, ``pine:L286-291``).
+MAX_TRACKED_SETUPS: Final[int] = 50
+
 #: Pivot lookback for the causal swing detector (the reference uses a 3-bar
 #: fractal, ``pine:L350``; the adapted third-party detector uses 5).
 SWING_FRACTAL: Final[int] = 3
@@ -235,6 +268,12 @@ class MarketParams:
         no reference (recorded as ``smt_divergence = -1``, never guessed).
     regime_index:
         Name of the volatility index that drives the regime layer.
+    regime_bands:
+        How the index's bands are drawn: ``"absolute"`` uses the index's own
+        documented points (VXN: 18 / 28), ``"percentile"`` uses the index's
+        own trailing tertiles.  The doc's absolute bins are stated for **VXN
+        only** (RULE_SPEC A34) and the audit measured that they do not
+        transfer: VXN and VIX disagree on roughly half the days.
     atr_coefficient:
         Minimum-gap coefficient as a multiple of ATR(14).
     session_windows:
@@ -246,6 +285,7 @@ class MarketParams:
     regime_index: str
     atr_coefficient: float
     session_windows: tuple[tuple[str, str, str], ...]
+    regime_bands: str = "absolute"
 
 
 MARKET_PARAMS: Final[dict[str, MarketParams]] = {
@@ -268,6 +308,7 @@ MARKET_PARAMS: Final[dict[str, MarketParams]] = {
         smt_reference="NQ",
         regime_index="VIX",
         atr_coefficient=0.20,
+        regime_bands="percentile",
         session_windows=(("America/New_York", *KILLZONE_NY_AM), ("America/New_York", *KILLZONE_NY_PM)),
     ),
     "QQQ": MarketParams(
@@ -282,6 +323,7 @@ MARKET_PARAMS: Final[dict[str, MarketParams]] = {
         smt_reference="SI",
         regime_index="GVZ",
         atr_coefficient=0.25,
+        regime_bands="percentile",
         session_windows=(("America/New_York", *KILLZONE_LONDON_ET), ("America/New_York", *KILLZONE_COMEX_ET)),
     ),
     "BTCUSDT": MarketParams(
@@ -289,6 +331,7 @@ MARKET_PARAMS: Final[dict[str, MarketParams]] = {
         smt_reference="ETHUSDT",
         regime_index="DVOL",
         atr_coefficient=0.25,
+        regime_bands="percentile",
         session_windows=(("America/New_York", *KILLZONE_CRYPTO_ET), ("UTC", *KILLZONE_CRYPTO_UTC)),
     ),
     "ETHUSDT": MarketParams(
@@ -296,6 +339,7 @@ MARKET_PARAMS: Final[dict[str, MarketParams]] = {
         smt_reference="BTCUSDT",
         regime_index="DVOL",
         atr_coefficient=0.25,
+        regime_bands="percentile",
         session_windows=(("America/New_York", *KILLZONE_CRYPTO_ET), ("UTC", *KILLZONE_CRYPTO_UTC)),
     ),
 }

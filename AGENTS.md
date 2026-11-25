@@ -2,14 +2,13 @@
 
 ## Project Overview
 
-Implementation of a **positive-EV quantitative trading system** for DodgysDD's
+Design + (planned) implementation of a **positive-EV quantitative trading system** for DodgysDD's
 *Inversion Fair Value Gap* (iFVG) strategy, built on **NautilusTrader** as both backtest and live engine.
 
 The strategy reacts (not predicts): after price sweeps liquidity and fails to hold an FVG, the FVG
 inverts into a resistance/support zone; entry is on the failed retest, stop beyond the recent swing,
-target the next liquidity pool. The **rule engine, the cost model, the rolling walk-forward and the
-meta-labeler are implemented and have been run against ten years of real NQ 1-minute data**
-(`research/audit/PHASE1_REPORT.md`); the vision layer and the RL layer are not built.
+target the next liquidity pool. The repo today is **specification-only** — four documents, zero code.
+Everything below marked *planned* describes the intended build; treat the documents as the source of truth.
 
 Current repo contents:
 
@@ -18,10 +17,6 @@ Current repo contents:
 | `iFVG几个模型的讨论.txt` | Master design doc: strategy rules, layer architecture, phased roadmap |
 | `diagram-四层正 EV 量化系统完整架构.svg` | Four-layer pipeline diagram |
 | `diagram-目录结构规划.svg` | Planned package tree (module numbers 1–6) |
-| `dodgys_dd_quant/` | The implementation: `strategy/`, `backtest/`, `ml_pipeline/` |
-| `scripts/` | Data ingest, the roll detector, the lake audit, the report renderer |
-| `research/audit/PHASE1_REPORT.md` | **The current result** — every figure parsed from a real run |
-| `.field-guide/` | Append-only log of environment quirks and hard-won facts |
 | `一些必备apikey和环境.txt` | Local env notes + **live API tokens** (never commit; see Risks) |
 
 ## Architecture & Data Flow
@@ -44,17 +39,14 @@ Data layer: NQ + ES 1m/5m bars/ticks + VXN index
 
 Module → file mapping (from `diagram-目录结构规划.svg`; package root is `dodgys_dd_quant/`):
 
-| # | File | Responsibility | Status |
-|---|---|---|---|
-| 1 | `dodgys_dd_quant/data_pipeline/prepare_parquet.py` | Databento DBN → `ParquetDataCatalog` bars; VXN clean + regime alignment | not built — the lake path (`scripts/ingest_futures_1m.py`) is used instead |
-| 2 | `dodgys_dd_quant/vision_validator/visual_cv.py` | Render 90 indicator-free candles → detector → IoU vs the rule FVG | **built** |
-| 3 | `dodgys_dd_quant/strategy/custom_data.py` | `VXNRegimeData` and vision-signal `Data` objects on the engine timeline | not built |
-| 4 | `dodgys_dd_quant/strategy/state_machine.py` | Faithful DodgysDD rule state machine | **built** |
-| 5 | `dodgys_dd_quant/strategy/dodgys_strategy.py` | NautilusTrader `Strategy`: multi-instrument subscription, filters, execution, log export | not built — the backtest harness (`dodgys_dd_quant/backtest/`) drives the engine instead |
-| 6 | `dodgys_dd_quant/ml_pipeline/meta_labeling_train.py` | Log → features → meta-labels → purged walk-forward LightGBM | **built** |
-
-The rule engine is a **pure function of the bar history** (no I/O, no engine calls), so the backtest
-harness and the unit tests drive the *same* code the live strategy would.
+| # | File | Responsibility |
+|---|---|---|
+| 1 | `dodgys_dd_quant/data_pipeline/prepare_parquet.py` | Databento DBN → `ParquetDataCatalog` bars; VXN clean + regime alignment |
+| 2 | `dodgys_dd_quant/vision_validator/visual_cv.py` | Render 60 indicator-free candles → detector → IoU vs rule FVG box |
+| 3 | `dodgys_dd_quant/strategy/custom_data.py` | `VXNRegimeData` and vision-signal `Data` objects on the engine timeline |
+| 4 | `dodgys_dd_quant/strategy/state_machine.py` | Faithful DodgysDD rule state machine |
+| 5 | `dodgys_dd_quant/strategy/dodgys_strategy.py` | NautilusTrader `Strategy`: multi-instrument subscription, filters, execution, log export |
+| 6 | `dodgys_dd_quant/ml_pipeline/meta_labeling_train.py` | Log → features → meta-labels → purged walk-forward LightGBM |
 
 **Rule engine (`state_machine.py`) — the deterministic core.** Five steps, no ML involved:
 
@@ -113,58 +105,20 @@ These are measured, not opinions:
    FVG box is 1.9 × 5.8 px.
 7. **The A+/A/B/C grade exists in no artifact**, so the phase-1 gate "A/A+ only" has no implementable
    definition. Report grades; do not filter on an invented rubric.
-8. **The lake's two manifests contradicted each other** on whether NQ/ES 1-minute bars exist.
-   Resolved 2026-11-23: the lake's manifest registers NQ/ES at `us_futures/<sym>/` with a `1m`
-   timeframe, and **10 years of NQ 1-minute + 4 years of ES 1-minute are now in the lake**
-   (Hugging Face; see Data Lanes below).
+8. **The lake's two manifests contradict each other** on whether NQ/ES 1-minute bars exist. Check
+   the mounted share before promising phase 1.
 9. **E-1 (executed, rev. 2, on the full 3.9-year BTCUSDT 1-minute dataset — 2,046,240 bars):
    no edge.** With **one position at a time**, E[R] spans **−0.024 to +0.014** across all 32 arms,
    every 95% CI includes zero, and **PF never exceeds 1.051** against the design doc's **> 1.25** gate.
    With a 0.05 R round trip every arm is negative. ⚠️ The first version of this result was wrong: it
    counted **423,759 simultaneously-open, correlated positions** as independent bets (t = 15.28).
    **A backtest must hold at most one position at a time, and significance must be quoted from that
-   arm.**
-10. **Phase 1 on NQ (executed 2026-11-23, 3,664,241 bars): the reference-faithful arm has a real
-    but too-small edge.** E[R] = **+0.0317 R**, t = **3.52**, CI **[0.014, 0.049]**, PF 1.048, over
-    25,083 trades — significant, and **net-negative (−0.070 R)** against the 0.102 R round trip.
-    The **leg tracker is the entire source of the edge** (alone: +0.0303, t = 3.38); the BE-intact
-    gate adds +0.0014. Three engine defects were hiding this and are now fixed (the leg tracker's
-    pivots were a 3-bar rolling minimum, so the arm produced **one trade in ten years**;
-    `require_be_intact` was dead config; SMT recorded "absent" where the reference had no data).
-11. **The upstream author's own replica concludes the strategy has no value** — see the README in
+   arm.** Phase 2 (ML) must not start.
+10. **The upstream author's own replica concludes the strategy has no value** — see the README in
     `research/github/IFVG-Ultimate-Dodgy/`. Treat a negative phase-1 result as a likely outcome to be
     measured, not an impossibility.
-12. **The edge is in the entry, not the payoff.** The RR sweep (1:1 → 1:4) moves gross E[R] inside a
-    band of 0.008 R; the NY killzone moves it by **+0.049 R** and the checklist by **+0.015 R**;
-    widening the stop *destroys* it (−0.068 R at 3×). The reference's 1:2 target was never the problem.
-13. **The doc's `IoU > 0.75` vision gate IS reachable.** `VISION_AUDIT.md` asserted the opposite from
-    a *static* reading of the checkpoint, without ever running the model. Measured: **336/348**
-    detector boxes land on a rule-engine FVG's middle bar (96.6 %), the class matches the gap's
-    direction in 96.1 %, and the vertical IoU against the **gap interval** has a median of **0.9518**
-    with 94.9 % above 0.75. The boxes wrap the **gap**, not the third candle's body. **Never infer
-    what a model does — measure it.**
-14. **The pre-registered forward test failed.** The frozen configuration does **not**
-    generalise: on BTCUSDT it is −0.016 R gross against the *plain* arm's +0.038 R. The
-    **filters** (session, checklist) are NQ-specific and actively hurt elsewhere (ES too).
-    The **rule's** gross edge does replicate on BTCUSDT (+0.038 R, t = 3.38, CI [0.016,
-    0.060]) — but **not in the only strictly-forward window that exists** (2025-07-26 →
-    2026-11-21, +0.0299 R, t = 1.51, CI [−0.009, 0.069], which includes zero). The NQ
-    dataset stops at 2025-07-25, so there is no cleaner forward test yet. See
-    `research/audit/PREREGISTRATION_FORWARD_TEST.md`.
-15. **The crypto regime index was never calibrated.** `DvolRegimeIndex` binned DVOL with
-    the VXN's edges (0/18/28/200), but DVOL's daily close runs 34–90, so the crypto regime
-    read **81.8 % "high", 0 % "normal"** and the `vxn_regime_normal` checklist condition
-    was never true (the checklist collapsed to 3.6 % of BTC candidates vs NQ's 21.1 %).
-    Now `DVOL_REGIME_BINS = (0.0, 45.6, 60.1, 200.0)`, calibrated to the DVOL quantiles
-    reproducing the VXN's own occupancy. **Any regime index needs its bands calibrated to
-    its own scale.**
-16. **The detector's *confidence* discriminates on the raw census** (win% 35.2 vs 30.7, E[R] +0.055
-    vs −0.079, two-proportion z = **+2.26**); the IoU itself is uninformative (corr +0.002 with the
-    outcome). **But applied to the portfolio it is redundant with the checklist** — net E[R] falls
-    monotonically from +0.047 to +0.020 as the threshold rises, because both filters detect clean
-    price action. The layer is a geometry cross-check, not an independent signal.
 
-## Data Lanes — what actually exists (measured 2026-11-23)
+## Data Lanes — what actually exists (measured 2026-11-22)
 
 The **authoritative** lake is an **NFS mount**: `nfs://fnos2.local/fs/1000/nfs/iflow/database`
 (`fnos2.local` = 192.168.1.6 — the same NAS as the SMB share, but the NFS export is world-accessible
@@ -175,45 +129,34 @@ mount**. Full evidence: `research/analysis/DATA_ACQUISITION.md`.
 
 | Asset | 1-minute | Multi-year lane |
 |---|---|---|
-| NQ | **3,664,241 bars, 2015-01-01 → 2025-07-25** (Hugging Face; quarterly splice detected and flagged) | 1h from 2024-05; 1d from 2021-10 |
-| ES | **646,948 bars, 2020-11-17 → 2024-07-19** (Hugging Face; 55 % weekday coverage, holes up to 165 days) | 1h from 2024-05; 1d from 2021-10 |
+| NQ | 7,490 bars (2026-09-24 → 10-01) only — **confirmed on the NFS lake** | 1h from 2024-05; 1d from 2021-10 |
+| ES | 7,489 bars (same week) | 1h from 2024-05; 1d from 2021-10 |
 | GC / XAU | 7,714 bars (same week) | 1h from 2024-05; 1d from 2021-10 |
 | QQQ | 2,428 bars (1 week) | **15m from 2022-10** (73,325 bars) |
 | BTCUSDT | **being filled → 2023-01 → 2026-11** | 15m from 2024-01; `bar_ofi` 1m from 2023-01 (1.64 M bars) |
 | ETHUSDT | **being filled → 2023-01 → 2026-11** | **15m from 2020-01** (239,520 bars) |
 
-**The 1-minute CME ceiling was measured — and the measurement was wrong.** Yahoo serves only ~1–2
-days of 1m (`range=1mo` → HTTP 422); cryptohftdata has no candle family; OKX needs ~14,000 requests
-per symbol; Twelve Data's lake mirror is an *equities* dataset with no NQ/ES at all. The conclusion
-drawn from those — "multi-year NQ/ES 1m needs Databento (~$10–30)" — was **false**: two Hugging
-Face datasets carry it for free.
-
-- `mdelcristo/NQ-F_1min_OHLCV_Parquet` — NQ 1-minute OHLCV, one parquet per year, **2015–2025**
-  (~50 MB). The `timestamp` is tz-**naive UTC**.
-- `Khanhpham1992/es-futures-1m` → `es_continuous_1m.parquet` (15 MB) — ES 1-minute with the
-  publisher's `instrument_id` per bar, plus `adj_*` columns.
-- Hugging Face tolerates **parallel** downloads (4 at once succeeded); api.github.com does not.
-  Use `curl -sL --fail --retry 3`.
-
-**The continuous series is rolled, and the roll looks exactly like a liquidity sweep.** At **37 of
-the 44** quarterly expiries in the NQ span there is a 1-minute move of **0.15 %–1.76 %** against a
-1-minute sigma of **0.030 %** (5–58 σ). These are the publisher splicing two contracts, and they
-must not be traded. The splice minute must be **detected** (the largest 1-minute move within ±3 days
-of the expiry — the publisher's roll dates ran up to 33 days away from it), not assumed to sit on
-the expiry date. `scripts/ingest_futures_1m.py` flags ±60 min around it as `roll_masked = 1`:
-**0.169 %** of NQ, **0.300 %** of ES.
-
-**The ES panel's `instrument_id` changes are dataset *segmentation*, not rolls.** The ids are not
-contiguous in time — id 95414 ends 2023-05-05 and id 314863 starts 2023-10-18, a **five-month
-hole**. The panel covers only **528 of 959 weekdays (55 %)**. Any ES-based SMT comparison across a
-hole is meaningless; the code returns `smt_divergence = −1` (unknown) where the reference does not
-cover the window.
+**The 1-minute CME ceiling is measured, not assumed.** Yahoo serves only ~1–2 days of 1m
+(`range=1mo` → HTTP 422); cryptohftdata has no candle family; OKX needs ~14,000 requests per symbol.
+The only free multi-year CME 1m path found is Twelve Data's lake mirror, pulled by **Parquet
+columnar pushdown over HTTP Range** (its `bars_1min/train.parquet` is 3.33 GB but NQ/ES live in a
+few row groups). Otherwise **Databento (~$10–30)** is the route the design doc already names.
 
 **Already in the lake and directly useful:** `macro/vxn/VXN_1d_consolidated.parquet` (CBOE official,
 4,327 bars, 2009→2026 — newly ingested), `macro/dvol/BTCDVOL_1h` (crypto regime index),
 `crypto_indices/CMC20/cmc20_15m_signals` (crypto cross-sectional regime),
 `crypto/high_frequency_lob/BTCUSDT/BTCUSDT_1m_3years_governed.parquet` (**`bar_ofi`** — the RL's
 missing order-book-imbalance state), and `depth20` / `lob_depth_microstructure` L2 files.
+
+**Higher timeframes for the crypto lanes (pulled 2026-11-24).** BTCUSDT, ETHUSDT, SOLUSDT,
+BNBUSDT and XRPUSDT now carry 5m/15m/30m/1h/2h/4h/1d partitions covering 2023-01 -> 2026-10/11,
+built by `data_pipeline/resample.py` from the 1m lanes (BTC/ETH) or from a Binance Vision 5m pull
+(SOL/BNB/XRP), with **complete-bucket-only** aggregation and the lake audit before publication.
+Binance funding is present for all five (4,200 rows, 2023-01 -> 2026-10); OKX funding covers only the
+venue's ~96-day history window.  The **legacy** 1h/4h/1d lanes are one-month stubs (744/186/31 bars,
+2024-01) and the legacy 15m lanes start in 2024-01, so the longer series live in `*_resampled.parquet`
+beside them -- pass `--data <path>` until a lane is republished under its canonical name.  Full evidence:
+`research/analysis/DATA_LANES_2026-11.md`; the NFS concurrent-write hazard is in `.field-guide/env.md`.
 
 **Consumption path:** `03_governed_lake/v2_parquet_lake/tools/db_loader.py` (`QuantDataLoader`) reads
 from the NFS lake and caches under `~/.cache/quant_db/`. Its path convention was **stale** — it looked
@@ -228,6 +171,8 @@ invariants — strict monotonic UTC timestamps, no duplicates, `High ≥ max(Ope
 "`volume == 0` implies `O == H == L == C`". Analytical lake = int64 **ms**, **left-open**, Parquet
 **Zstd-7**, atomic `.tmp` → rename. **No synthetic forward-fill.** Note: the lake's own auditor only
 tests `volume < 0`, so it **cannot** detect a zero-volume non-flat bar — verify that rule yourself.
+**Verified** by `dodgys_dd_quant.data_pipeline.audit` (all five invariants plus the flat-bar
+corollary): the governed `BTCUSDT_1m_consolidated.parquet` (2,046,240 bars) passes every one.
 
 ## What is built (and what it shows)
 
@@ -235,58 +180,134 @@ tests `volume < 0`, so it **cannot** detect a zero-volume non-flat bar — verif
 - `strategy/` — the rule engine: causal swings, one-shot sweep levels, ATR gap floor, inversion window
   `[1,15]`/`[7,15]`, BE-intact gate, checklist as five booleans (**reported, never filtered on**),
   VXN regime with a one-day lag. Emits the **D2** candidate log verbatim.
+  **`dodgys_strategy.py` is the NautilusTrader strategy (doc module #5)**: it consumes the precomputed
+  candidate feed (the rules are *not* re-run per bar -- the engine is O(history)) and owns execution --
+  bracket orders (market entry, limit TP, stop-market SL), one position at a time, an optional time
+  exit, and the export. `backtest/nautilus_runner.py` runs it in `BacktestEngine` and writes
+  `fills/positions/account.parquet`; `data_pipeline/catalog_builder.py` builds the
+  `ParquetDataCatalog` (`CryptoPerpetual`, ns close timestamps). Parity on a 2,000-bar BTC 30m slice:
+  240 candidates -> 52 brackets -> **49 positions, the engine's 49**. The reference's remaining
+  machinery is ported as **opt-in switches**: the leg-origin tracker, the break-even level and its
+  resolution, the HTF confluence gate, the setup-history cap, the per-direction candidate cap, the
+  hand-aggregated HTF view with its three-bar fractal sweep object, and the roll-boundary guard.
+- `vision_validator/` — the D6 contract: a white 640×640 render, a 2-D box IoU against the third
+  candle's **body**, a calibrated body-IoU threshold, the gap IoU demoted to a descriptive statistic
+  and the three-part gate.
 - `ml_pipeline/` — binary meta-labels, purged 6/1/1 walk-forward with an embargo tied to the label
   horizon, LightGBM, **D3** artefacts, a Kaggle kernel generator that never sees the test fold.
 - `backtest/` — costs isolated in the config, **one position at a time**, per-fold model, the
   forward-only guard that **raises** on a malformed fold, an **independent** rule-only baseline,
-  per-fold and deflated-Sharpe statistics.
+  per-fold and deflated-Sharpe statistics, the write-once trial registry and the CSCV/PBO.
+  Every run can be **archived** (`--archive <dir>`): `runs.parquet` (one row of statistics and the
+  kill-switch verdict) and `candidates.parquet` -- **every** candidate, taken or not, with its
+  geometry, all features, the model's `p_win`, the gate's decision, the portfolio's `selected` flag
+  and the final label `y`.  The whole `symbol x timeframe x preset` sweep is reproducible with
+  `python -m dodgys_dd_quant.backtest.matrix` (see `research/experiments/BASELINE_MATRIX_2026-11-24.md`).
+  The holding period is a **time** (`--horizon-minutes`), converted to the scanned series' bar
+  count, and the outcome can be resolved on a finer **execution series**
+  (`--execution-data`, `backtest/execution.py`): the signal decides *whether* to trade, the
+  execution bars decide *which barrier came first*. The meta-label gate can use each fold's
+  **validation-fold quantile** on an isotonic-calibrated probability (`--gate quantile`)
+  instead of the fixed 0.58, which on uncalibrated scores opened in bursts and closed for
+  years at a time.
+- `analysis/` — the L3 §C.2 regime-correlation test (per-band E[R], CR1 errors, moving-block
+  permutation p-value) and the **no-FVG momentum control** (L4 §C.6's A4): a plain ATR-normalised
+  momentum system the FVG has to beat.
+- `rl/` — the action space that **cannot open a position**, the downside-adjusted reward with the
+  1.5R failure penalty and the scale-free state.
+- `data_pipeline/` — the governed-lake **auditor** (the five invariants plus the flat-bar
+  corollary the lake's own auditor cannot see), the **roll-boundary** detector (a contract switch
+  must not fake a sweep), the **session calendar** (the killzone windows and the Globex open in
+  New York time *with DST*, the regular-trading-hours flag), and the Nautilus ingest
+  (`prepare_parquet.py`): the CME `FuturesContract` definitions (NQ/MNQ/ES/MES, with the cost
+  model's tick and multiplier), the catalog writer and the continuous-series-as-dated-contracts rule.
+- `backtest/` — the write-once trial registry, the **CSCV/PBO**, the D4 accounting statement, the
+  paper stage's **slippage-parity** check, **L4 §C.6's five abort criteria** — the "kill the
+  project" rules, evaluated on the concatenated OOS and wired to the kill-switch's K3 — and the
+  **degradation monitor** (L4 §F.3): the fold's training P(Win) distribution and feature
+  importances live in the D3 artefact, and the walk-forward feeds the switch's three signals.
+- `strategy/custom_data.py` — the regime index and the vision verdict as Nautilus `Data` objects,
+  so the two exogenous signals ride the engine's timeline.
 
-**84 tests pass** (2 skipped: they need LightGBM, which lives in `.venv-ml/`).
+**153 unit tests pass** (LightGBM is importable from the 3.11 interpreter, so nothing is
+skipped). The
+`bench/` capability benchmark runs 167 executable probes over the same code — 5,908 verified
+capability points, 0 invariant failures (`bash autoresearch.sh`).
 
-**Measured on 2,046,240 real BTCUSDT 1-minute bars, 366,500 candidates, 39 folds:**
+**Measured on 2,046,240 real BTCUSDT 1-minute bars, 366,500 candidates, 39 folds** — re-measured
+on 2026-11-23 after the timezone and portfolio-accounting fixes, on the governed lake
+(`BTCUSDT_1m_consolidated.parquet`), `preset=honest`, doc window (7, 15), binance cost, 1 tick of
+slippage. The run is reproducible: LightGBM's thread count is pinned.
 
 | | n trades | E[R] gross | E[R] net | PF | t | 95 % CI |
 |---|---|---|---|---|---|---|
-| Rule only | 21,539 | −0.0002 | −0.4986 | 1.000 | −0.02 | [−0.019, +0.019] |
-| ML-gated (`P(Win) ≥ 0.58`) | 652 | +0.0675 | −0.5245 | 1.105 | 1.20 | [−0.043, +0.178] |
+| Rule only | 32,521 | −0.0183 | −0.6328 | 0.973 | −2.34 | [−0.034, −0.003] |
+| ML-gated (`P(Win) ≥ 0.58`) | 282 | 0.0000 | −0.6310 | 1.000 | 0.00 | [−0.165, +0.165] |
 
-The 1:2 break-even win rate is exactly 33.3 %; the measured win rate is 33.3 %. `auc_test` is
-**0.483–0.521** across all folds — the meta-labeler has no predictive power. The round-trip cost is
-**0.50–0.83 R** per trade while the break-even cost is **0.009 R**.
+Both arms use the **drop** accounting (a signal blocked by an open position is discarded). The
+D4 baseline in `E1_RESULTS.md` is the **deferred** arm (a blocked signal stays pending and may
+trigger later at a different price) — 15,928 trades, E[R] −0.020 R, PF 0.971, t = −1.76 — so the
+two tables are *not* the same accounting and must not be compared row for row. The E-1 arms still
+reproduce exactly: the census arm 423,759 trades / E[R] +0.033 / PF 1.051 / t = 15.28, and every
+one-at-a-time arm's CI includes zero.
 
-**Measured on 3,664,241 real NQ 1-minute bars (2015–2025), 120 folds — the current result:**
+****The timeframe, not the rules, decided the published verdict (E3/E4).** On the same instrument,
+features and costs, ETHUSDT 1m gives E[R] -0.0003 (n=39,645, mean cost 0.636 R) and ETHUSDT 15m
+gives +0.0475 (n=4,221, t=2.17, mean cost 0.111 R) — the first positive gross edge in the
+repository, exactly cancelled by the Binance fee (break-even cost 0.0475 R).  The `doc` preset's
+ATR floor is the only filter that turns the net expectancy positive (+0.0159 R, n=354, t=1.32 —
+underpowered).  The reference-faithful `pine` preset collapses (-0.41 R, 19.3 % win rate) because
+its break-even exit is resolved on the same bars that produced the setup.  See
+`research/experiments/ETH15_WALKFORWARD.md` and `research/analysis/STRATEGY_VERSIONS.md`.
 
-| arm | n trades | win% | E[R] gross | E[R] net | PF | t | 95 % CI |
-|---|---|---|---|---|---|---|---|
-| `honest` (the scanner) | 45,734 | 32.9 | −0.0127 | −0.1436 | 0.981 | −1.93 | [−0.026, 0.000] |
-| `pine_leg` (leg tracker) | 25,228 | 34.3 | **+0.0303** | −0.0714 | 1.046 | **+3.38** | **[0.013, 0.048]** |
-| `pine` (reference-faithful) | 25,083 | 34.4 | **+0.0317** | −0.0700 | 1.048 | **+3.52** | **[0.014, 0.049]** |
-| `pine` + ML gate | 705 | 35.0 | **+0.0511** | −0.0772 | 1.079 | +0.95 | [−0.055, +0.157] |
+The no-FVG control (L4 §C.6, A4).** `dodgys_dd_quant.analysis.momentum_baseline` is a plain
+ATR-normalised momentum system on the same bars, the same costs and the same one-position-at-a-time
+accounting. On the same 2,046,240 bars it closes **444,928 trades at +0.0455 R gross** — against
+the rule engine's **−0.0183 R gross**. The FVG therefore *loses* to a plain momentum system before
+costs; it wins only **net** (−0.633 R against the control's −2.051 R), and only because its stops
+are wider, so the same fee buys a larger cost in R. The honest reading: the rule engine has **no
+gross edge at all**, and the cost profile decides which arm looks better. This is why L4 §C.6's A4
+compares the two arms **gross against gross** — a net comparison is rigged by the risk definition —
+and leaves the "is it tradable" question to A2.
 
-The 1:2 break-even win rate is 33.3 %; the reference arm's measured win rate is 34.4 %. `auc_test` is
-**0.47–0.53** — still no predictive power. The round-trip cost is **0.102 R** against a gross edge of
-**0.032 R**: the edge is significant but three times too small. **Phase 2 (ML) must not start**, and
-the next lever is the payoff (the RR sweep), not the entry.
+**The repo's own verdict on that run is K3 — kill the project.** The walk-forward evaluates L4
+§C.6's abort criteria and prints them:
+
+```
+KILL-SWITCH: K3   signals fired: calibration, importance_churn
+ABORT CRITERIA (L4 C.6): fired A1, A2, A4
+```
+
+All five criteria are evaluated. A1 fires (the meta-labeler adds nothing: the net expectancy is
+not positive and the CI includes zero), A2 fires (the gross edge does not survive the costs: only
+the cost-heavy bucket is profitable) and A4 fires (the FVG does not beat the no-FVG control); the
+degradation monitor's calibration and churn signals fire as well. A3 and A5 are evaluated and do
+not fire. The published artefact is
+`research/experiments/E2E_MODEL_WALKFORWARD.txt`.
+
+The 1:2 break-even win rate is exactly 33.3 %; the measured win rate is 32.7 % (rule-only) and
+33.3 % (gated). `auc_test` is **0.485–0.522** across all folds — the meta-labeler has no predictive
+power. The round-trip cost is **0.61–0.63 R** per trade, and the gross expectancy is **−0.018 R**:
+the rule-only arm already loses before costs, and the costs bury it. Both t-statistics are quoted
+from the **one-position-at-a-time** arm (D4) — the census arm's t = 15.28 is an artefact of
+correlated trades and is never quoted. **Phase 2 (ML) must not start.**
 
 ## Key Directories
 
 ```
-dodgys_dd_quant/          # package root
-├── strategy/             # #4 rule engine, the candidate log, the constants
-├── backtest/             # the cost model, the rolling walk-forward, the runner
-└── ml_pipeline/          # #6 feature engineering + the rolling meta-labeler
-scripts/                  # data ingest, roll detection, the lake audit, the report renderer
-tests/unit/               # the rule engine, the labels, the splits, the cost model
-research/                 # docs/, analysis/, audit/, experiments/ — every executed output
-data/                     # gitignored: candidate logs, models
-artifacts/, artifacts_pine/  # gitignored: the trained folds and the walk-forward index
+dodgys_dd_quant/          # package root (planned; does not exist yet)
+├── data_pipeline/        # #1 market data ingest → Nautilus Parquet catalog
+├── vision_validator/     # #2 chart rendering + detector IoU
+├── strategy/             # #3 custom Data, #4 rule engine, #5 main strategy
+└── ml_pipeline/          # #6 feature engineering + rolling training
+configs/                  # planned: backtest/, live/, strategy/, symbols/, regimes/
+tests/                    # planned: unit/ (rules), integration/ (backtest), vision/
+data/                     # gitignored: catalog/, *.parquet, models/
 ```
 
-Data lake (external, governed): `~/iflow_lake/iflow/database` (NFS; the SMB share rejects every
-credential), governed by `github.com/jssyxd/dataBaseLake`. Incremental pulls must pass that repo's
-audit/governance standard and be marked **可用 / 可入湖** before use — run
-`scripts/audit_lake_dataset.py` and write the declaration into the lake's `reports/` directory.
-Binance/OKX official history and cryptohftdata.com supplement crypto coverage.
+Data lake (external, governed): `smb://192.168.1.6/iflow/database`, governed by
+`github.com/jssyxd/dataBaseLake`. Incremental pulls must pass that repo's audit/governance standard and be
+marked **可用 / 可入湖** before use. Binance/OKX official history and cryptohftdata.com supplement crypto coverage.
 
 ## Development Commands
 
@@ -300,67 +321,42 @@ PY=/home/da/.local/share/uv/python/cpython-3.11.17-linux-x86_64-gnu/bin/python3.
 $PY -V                                   # 3.11.17 — REQUIRED (NT needs >=3.11,<3.14)
 $PY -c "import nautilus_trader; print(nautilus_trader.__version__)"
 
-# the ML extras live in their own venv (LightGBM is not in the runtime env)
-.venv-ml/bin/python -c "import lightgbm; print(lightgbm.__version__)"
+# deps still missing for the doc's full stack
+$PY -m pip install databento yfinance mplfinance ultralytics lightgbm scikit-learn pytest
 ```
 
-The **two interpreters** are a hard split: the 3.11 runtime env runs the rule engine and the
-backtest; `.venv-ml` runs the feature builder and the meta-labeler, because LightGBM needs a build
-the runtime env does not have. Never install LightGBM into the runtime env. The **vision layer has a
-third env**, `.venv-vision/` (torch + ultralytics), because the uv runtime interpreter is
-**externally managed** (PEP 668) and must not be modified.
+Run the engine. The wheel ships **no `nautilus` console script** — use the module entry
+points. The configuration is a **JSON list** and `--raw` takes the **raw JSON string**
+(`--fsspec-url` takes a path), so a file is passed with a shell substitution:
 
 ```bash
-# the rule engine, rule-only, one position at a time
-$PY -m dodgys_dd_quant.backtest.runner --symbol NQ --timeframe 1m --preset pine \
-    --cost-profile nq --slippage-ticks 1 --inversion-window doc --regime vxn \
-    --reference-symbol ES --no-write-candidates
+# the phase-1 baseline backtest (NQ + ES, one minute)
+$PY -m nautilus_trader.backtest --raw "$(cat configs/backtest/phase1_baseline_nq_es.json)"
 
-# the payoff / entry sweeps (the phase-1 report's §3-§5)
-$PY -m dodgys_dd_quant.backtest.runner --symbol NQ --timeframe 1m --preset pine \
-    --rr 1.0 --killzone --min-checklist 3 --min-checklist-known 4 \
-    --cost-profile nq --slippage-ticks 1 --inversion-window doc --regime vxn \
-    --reference-symbol ES --no-write-candidates
-
-# the vision layer (its own env; no GPU on this host, 0.45 s per candidate)
-.venv-vision/bin/python scripts/vision_signals.py \
-    --candidates data/candidates/NQ_1m_pine_kz.parquet \
-    --bars ~/iflow_lake/iflow/database/03_governed_lake/v2_parquet_lake/us_futures/NQ/1m/NQ_1m.parquet \
-    --out data/candidates/NQ_1m_kz_vision.parquet
-.venv-vision/bin/python scripts/analyze_vision_signal.py \
-    --candidates data/candidates/NQ_1m_pine.parquet \
-    --vision data/candidates/NQ_1m_vision.parquet
-
-# the meta-labeler and then the gated walk-forward
-.venv-ml/bin/python -m dodgys_dd_quant.ml_pipeline.train_meta_labeler \
-    --candidates data/candidates/NQ_1m_pine.parquet \
-    --bars ~/iflow_lake/iflow/database/03_governed_lake/v2_parquet_lake/us_futures/NQ/1m/NQ_1m.parquet \
-    --run-root artifacts_pine
-$PY -m dodgys_dd_quant.backtest.runner ... --models-root artifacts_pine
-
-# the data pipeline
-bash scripts/fetch_hf_futures_1m.sh
-$PY scripts/ingest_futures_1m.py --symbol NQ --root research/hf_futures
-$PY scripts/audit_lake_dataset.py --path <lake>/us_futures/NQ/1m/NQ_1m.parquet
-
-# the report, re-rendered from the executed output
-$PY scripts/render_phase1_report.py
-
-# tests (pytest must be in the 3.11 env; the system 3.14 pytest is unusable)
-$PY -m pytest tests/unit -q
+# the capability benchmark (83+ executable probes over the real numbers)
+bash autoresearch.sh
 ```
 
-Run the engine (the wheel ships **no `nautilus` console script** — use module entry points):
+The configuration is **JSON only** — NautilusTrader 1.221's config layer is msgspec and the
+package ships no YAML support. `configs/backtest/phase1_baseline_nq_es.json` expects the
+Nautilus catalog at `artifacts/catalog/nq_es`, which `dodgys_dd_quant.data_pipeline.prepare_parquet`
+writes from the governed lake.
 
-```bash
-$PY -m nautilus_trader.backtest --raw configs/backtest/phase1_baseline_nq_es.json
-$PY -m nautilus_trader.live     --raw configs/live/paper_tradovate.json
-```
-
-Run the E-1 falsification test:
+Run the E-1 falsification test (the only executable experiment available today):
 
 ```bash
 $PY research/experiments/e1_rule_falsification.py     # ~5 s, stdlib only
+```
+
+Planned project commands once tooling lands (keep them in a `Makefile`):
+
+```bash
+make data      # DBN → ParquetDataCatalog + vxn_aligned.parquet
+make backtest  # phase-1 rule-only baseline
+make features  # logs → labelled dataset
+make train     # purged walk-forward LightGBM
+make test      # pytest
+make lint      # ruff + mypy
 ```
 
 ## Code Conventions & Common Patterns
@@ -396,15 +392,9 @@ $PY research/experiments/e1_rule_falsification.py     # ~5 s, stdlib only
 | `iFVG几个模型的讨论.txt` | Single source of truth for rules, thresholds, roadmap |
 | `diagram-四层正 EV 量化系统完整架构.svg` | Layer contracts, the `0.58` gate, RL action space |
 | `diagram-目录结构规划.svg` | Canonical package/module layout — follow it |
-| `research/audit/PHASE1_REPORT.md` | **The current result**, rendered from the executed output |
 | `dodgys_dd_quant/strategy/state_machine.py` | The rules; everything else filters its output |
-| `dodgys_dd_quant/strategy/constants.py` | Every tunable threshold in one place |
-| `dodgys_dd_quant/backtest/runner.py` | The phase-1 CLI: preset, cost profile, slippage, regime |
-| `dodgys_dd_quant/backtest/walk_forward.py` | The rolling walk-forward, the forward-only guard, the portfolio accounting |
-| `dodgys_dd_quant/ml_pipeline/train_meta_labeler.py` | The purged walk-forward meta-labeler (D3 artefacts) |
-| `scripts/ingest_futures_1m.py` | The lake ingest **with the detected roll mask** |
-| `scripts/audit_lake_dataset.py` | The five mathematical invariants, re-derived from the stored file |
-| `scripts/render_phase1_report.py` | Renders the phase-1 report from the executed output — never hand-edited |
+| `dodgys_dd_quant/strategy/dodgys_strategy.py` | Wires filters, sizing, bracket orders, log export |
+| `dodgys_dd_quant/data_pipeline/prepare_parquet.py` | Only module with concrete code in the docs — **implemented** against the installed NT 1.221 API: the CME `FuturesContract` definitions, the catalog writer (the instrument's price precision, the ns timestamp discipline) and the continuous-series-as-dated-contracts rule |
 
 ## Runtime / Tooling Preferences
 
@@ -416,46 +406,35 @@ $PY research/experiments/e1_rule_falsification.py     # ~5 s, stdlib only
 - **Installed**: `nautilus_trader 1.221.0`, `pandas 2.3.3`, `numpy 2.4.6`, `pyarrow 26.0.0`, `msgspec 0.22.0`,
   `fsspec 2025.12.0` (python3.11 site-packages). **Missing**: `databento`, `yfinance`, `mplfinance`,
   `ultralytics`, `lightgbm`, `scikit-learn`, `pytest` (for 3.11).
-- **GPU**: there is **none on this host** (`nvidia-smi` is absent), so the detector runs on CPU at
-  **0.45 s per candidate** — fine for a filtered subset, hopeless for the full 430 k census. The
-  vision layer runs out-of-band in `.venv-vision/` and writes a parquet the strategy joins.
+- **GPU**: the vision layer needs CUDA for YOLOv26m; run the detector out-of-band or CPU-fallback explicitly
+  rather than silently degrading.
 - **Secrets**: `一些必备apikey和环境.txt` holds live GitHub/HF/Kaggle/CryptoHFT tokens. It must be
   gitignored, never copied into code or committed, and replaced by env vars / `.env` (gitignored) with a
   committed `.env.example` listing key **names** only.
 
 ## Testing & QA
 
-`tests/unit/` exists and runs (86 tests). Planned additions:
+No test suite exists yet. Planned layout:
 
 ```
-tests/unit/         # state machine, FVG detection, SMT, regime binning, cost model, splits — pure, no engine
+tests/unit/         # state machine, FVG detection, SMT, regime binning — pure functions, no engine
 tests/integration/  # backtest smoke tests, catalog round-trip, feature/label alignment
 tests/vision/       # IoU computation, render→detect determinism
 ```
 
-- **Framework**: `pytest` in the 3.11 interpreter (the system 3.14 pytest is unusable).
-  `$PY -m pytest tests/unit -q` → 86 passed in ~3 s.
-- **Look-ahead is tested by construction**: `test_truncating_the_future_does_not_change_the_signals`
-  re-runs the engine on a truncated series and asserts the earlier signals are byte-identical.
-  Every preset is parameterised over it — keep it that way.
+- **Framework**: `pytest` (install into the 3.11 interpreter; the system 3.14 pytest is unusable).
 - **Phase gates — these are acceptance criteria, not aspirations:**
-  - *Phase 1 (rule-only)*: EV must be **positive** under realistic costs — ~**$4.5 round-turn
-    fees**, **1–2 ticks** slippage, fixed 1:2 RR, A/A+ setups only → **Profit Factor > 1.25**.
-    **Status: executed and FAILED.** The reference-faithful arm reaches PF 1.048 gross
-    (E[R] +0.0317, t = 3.52) but −0.070 R net of the 0.102 R round trip
-    (`research/audit/PHASE1_REPORT.md`). A negative pure-rule result means the rule reproduction is
-    wrong; **never** paper over it with ML.
-  - *Phase 2 (features + vision)*: win rate **> 55%** and materially lower max drawdown.
-  - *Phase 3 (RL + paper trading)*: PPO position/BE management, then **4 weeks** forward paper
+  - *Phase 1 (rule-only, weeks 1–2)*: EV must be **positive** under realistic costs — ~**$4.5 round-turn
+    fees**, **1–2 ticks** slippage, fixed 1:2 RR, A/A+ setups only → **Profit Factor > 1.25**. A negative
+    pure-rule result means the rule reproduction is wrong; **never** paper over it with ML.
+  - *Phase 2 (features + vision, weeks 3–4)*: win rate **> 55%** (from ~45%) and materially lower max drawdown.
+  - *Phase 3 (RL + paper trading, weeks 5–6)*: PPO position/BE management, then **4 weeks** forward paper
     trading on IB / Tradovate / Rithmic to confirm backtest↔live slippage parity.
   - Target steady state: sample-out-of-sample **Sharpe > 1.8**, **max drawdown < 10%**.
 - **Leakage checks are part of QA**: assert VXN is lagged, assert walk-forward splits have an embargo
   (no train/test overlap), assert the visual IoU threshold is applied, assert RL never emits an open action.
 - **Cost model** belongs in the backtest config, not in strategy logic, so backtests and paper runs share it.
 - Tests must be deterministic and isolated from the network; data comes from the local catalog / data lake.
-- **A regression test belongs beside every defect you fix in the rule engine.** Five shipped
-  together with the phase-1 fixes: the leg tracker's pivot cadence, the BE-intact gate, the
-  unknown-SMT case, the killzone gate reaching the leg tracker, and the stop multiplier.
 
 ## Market Expansion Reference
 
@@ -501,26 +480,20 @@ high → halve risk per trade, raise the minimum ATR gap threshold.
   `research/analysis/ML_REUSE.md`.
 
 **Still open — these block the build:**
-- **The phase-1 gate is unimplementable as written** because "A/A+ only" has no definition. Substitute:
-  implement the five named checklist conditions as booleans and *report* the grades rather than
-  filtering on them.
-- **The edge is real but too small for the costs.** The reference-faithful arm reaches
-  E[R] = +0.0317 R (t = 3.52, CI [0.014, 0.049], PF 1.048) over 25,083 trades across ten years of
-  NQ — but the round trip costs 0.102 R, so the arm is **net-negative at 1 tick of slippage** and
-  the doc's `PF > 1.25` gate is unreachable by tuning. The next lever is the **payoff**, not the
-  entry: sweep the RR (the run is a pure re-run with a different target) and the stop geometry,
-  since a wider stop lowers the cost-to-risk ratio.
-- **The meta-labeler has no out-of-sample signal** (`auc_test` 0.47–0.53 over 120 monthly folds).
-  It does lift the reference arm's gross expectancy (+0.0317 → +0.0511 R) by selecting better
-  setups, but the features it sees — checklist score, SMT flag, VXN regime, bar geometry — do not
-  carry the signal. The **vision layer's IoU is not in the feature frame** and is the obvious
-  candidate for an independent signal.
+- **The phase-1 gate is unimplementable as written** because "A/A+ only" has no definition. **Closed by
+  substitution:** the five named checklist conditions are implemented as booleans and the grades are
+  *reported*, never filtered on.
+- **No reachable NQ/ES 1-minute pair with a documented roll rule.** The two lake manifests disagree;
+  the databank MANIFEST lists NQ/ES as **1-Day only**. The share `smb://192.168.1.6/iflow/database` is
+  not mounted on this host. The roll rule matters: a roll gap can fake a liquidity sweep. **The rule
+  itself is implemented** (`data_pipeline/roll.py` and the engine's roll guard); what is missing is the
+  *per-contract* data, which is a purchase.
 - **No intraday VXN.** The pipeline builds daily VXN, but the ML feature list needs a 1-hour change
-  rate. Either source intraday VXN separately or drop the feature.
-- **No order-book imbalance data**, which the RL state requires (doc L151). The RL layer also still has
-  no file path and no action-space grid.
+  rate. **Dropped, not fabricated** (RULE_SPEC A18): the feature list carries the exclusion with its
+  reason.
+- **No order-book imbalance data**, which the RL state requires (doc L151). The state uses the
+  close-location proxy (L4 §D.3) and says so.
 - **Continuous-contract handling is undecided.** `FuturesContract` requires mandatory
-  `activation_ns`/`expiration_ns`; a continuous NQ contract has no single expiry.
-- **ES covers only 55 % of the weekdays** in the 1-minute panel, with holes up to 165 days. The SMT
-  comparison is therefore unavailable for long stretches of the NQ sample; it must report *unknown*
-  (`−1`) rather than *absent* (`0`) there, or the ML features are poisoned.
+  `activation_ns`/`expiration_ns`; a continuous NQ contract has no single expiry. **Decided:** a
+  continuous series is a **series of dated contracts**, one per roll segment
+  (`data_pipeline/prepare_parquet.py`).

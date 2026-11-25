@@ -1,0 +1,46 @@
+{
+  "source": "artifacts/matrix_2026-11-24",
+  "command": "python -m dodgys_dd_quant.backtest.matrix --symbols BTCUSDT ETHUSDT SOLUSDT BNBUSDT XRPUSDT --timeframes 5m 15m 30m 1h 2h 4h 1d --presets honest doc --horizon-minutes 3600",
+  "cells": 98,
+  "candidates": 284083,
+  "selected": 87997,
+  "label_distribution": {
+    "0": 181271,
+    "1": 93386,
+    "-1": 9426
+  },
+  "features": [
+    "checklist_score",
+    "smt_divergence",
+    "vxn_level",
+    "vxn_regime",
+    "bars_to_inversion",
+    "minutes_from_us_open",
+    "vision_iou",
+    "vision_confidence",
+    "atr14",
+    "risk_atr",
+    "gap_atr",
+    "volume_zscore_60"
+  ],
+  "label": "1 target, 0 stop, -1 unresolved (censored or break-even)",
+  "provenance": {
+    "regime": "DVOL (lagged)",
+    "costs": "binance 0.08% + 1 tick, per-symbol tick",
+    "accounting": "one position at a time, drop (D4)"
+  },
+  "kinds": {
+    "crypto": 70,
+    "futures": 28
+  },
+  "instruments": [
+    "BNBUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "MES",
+    "MNQ",
+    "SOLUSDT",
+    "XRPUSDT"
+  ],
+  "futures_source": "MNQ/MES quote the NQ/ES series (same underlying); lanes resampled from the NQ/ES 1m lane"
+}

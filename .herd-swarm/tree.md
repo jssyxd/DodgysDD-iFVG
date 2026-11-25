@@ -44,3 +44,19 @@ All 8 leaves are merged; the fleet is torn down (captain pane only).
   of 21,539 trades at E[R] -0.0002 -> **E_net -0.5245 R** after costs.
 - The repository is published at `jssyxd/DodgysDD-iFVG` (private) and local/remote are at the
   same commit.
+
+## 2026-11-24 — Nautilus port (captain-implemented; swarm blocked)
+| leaf | status | evidence |
+|---|---|---|
+| catalog | merged (captain) | `data_pipeline/catalog_builder.py`, round-trip test |
+| strategy | merged (captain) | `strategy/dodgys_strategy.py`, bracket orders, one position |
+| runner | merged (captain) | `backtest/nautilus_runner.py`, fills/positions/account exports |
+| parity | merged (captain) | 240 candidates -> 52 brackets -> 49 positions = engine's 49 |
+| mapping | planned | `research/nautilus/PINE_TO_NAUTILUS.md` still missing |
+| matrix (Nautilus) | planned | `backtest/nautilus_matrix.py` not written yet |
+
+## 2026-11-24 — Nautilus matrix (30m, 1h, + micros)
+28 cells, 27 within the 1 % parity tolerance; MNQ/MES added on XCME using the
+NQ/ES price series (the micros are the same underlying). Measured: position
+counts match the engine; **PnL is not reconciled with R-space and is flagged,
+not quoted**. Evidence: `research/experiments/NAUTILUS_MATRIX_2026-11-24.md`.

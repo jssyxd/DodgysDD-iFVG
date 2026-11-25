@@ -142,26 +142,21 @@ Working path: `scripts/sync_via_api.sh` -> `scripts/push_via_api.py` (blobs -> t
 ref), then `git fetch origin && git reset --hard origin/main` so local and remote converge on the
 same commit.
 
-## 2026-11-23 — an unmounted NFS lake silently shows a STALE LOCAL COPY
-`~/iflow_lake` is an NFS mount point. When the mount drops, the directory
-**still exists** and still contains a stale copy of the lake tree — with the
-*old* small files (NQ 1m was 94 KB instead of 43 MB, and every file had
-October timestamps). Nothing errors; `ls` succeeds; the paths look right.
-
-The trap: it reads exactly like "the server was reverted and my published data
-is gone". It is not — the server was fine, the client was just reading the
-directory *underneath* the mount point.
-
-**Always check `mount | grep iflow` before trusting any lake listing**, and
-re-mount with:
-
-```bash
-sudo -n mount -t nfs -o rw,vers=3,proto=tcp fnos2.local:/fs/1000/nfs ~/iflow_lake
+## 2026-11-24 — two writers on the NFS lake leave partitions unreadable, for root too
+The fnOS NFS export (`vers=3`, `~/iflow_lake`) does not tolerate two processes renaming files into the
+same directory tree. Running a second puller while the first was still writing produced a batch of
+partitions that answer **EACCES on read for every client, `sudo` included**, while `stat` shows mode
+`0777` and `os.replace` had already returned success:
 ```
-
-(`sudo -n` works without a password prompt on this host; it prints one
-systemd symlink line and succeeds.)
-
-Everything published earlier that day — the 43 MB NQ 1-minute parquet, the
-7.2 MB ES one, the roll reports and the three audit reports — was intact on
-the server and needed no republishing.
+head: cannot open '.../funding_rate/BTCUSDT/BTCUSDT_funding_rate.parquet' for reading: Permission denied
+```
+It is not a mode/ACL problem (`getfacl` shows `other::rwx`, a fresh file in the same directory reads
+fine) and it is not a client cache: root hits the same error. The file is unrecoverable in place — the
+only fix is to **delete and rewrite** it.
+Measured consequences: 16 partitions from one concurrent pull batch, including both funding files and
+half of the resampled timeframes.
+Mitigation now in the code (`data_pipeline/pull_exchange.write_governed`):
+* an **exclusive `flock` per target partition** (`.lock` beside the parquet);
+* a **read-back of the Parquet metadata after the rename**, retried with a fresh inode;
+* the writer raises rather than publishing a file it cannot read back.
+Operational rule: **one writer per lake tree at a time.**

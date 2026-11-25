@@ -4,46 +4,10 @@
 `iFVG几个模型的讨论.txt`, layer 2 in `diagram-四层正 EV 量化系统完整架构.svg`) against the actual
 artefacts of `ibtsam/nq-fvg-detector` and its training dataset.
 
-> ## ⚠️ CORRECTION (2026-11-24) — §C.2 D1/D3 were **wrong**, and the layer **works**
->
-> This audit was written **without running the detector** ("no `torch`/`ultralytics` load, no
-> inference executed"). It therefore *inferred* what the detector's boxes wrap, and it inferred
-> **the wrong thing**. §C.2 (D1) asserts:
->
-> > "the detector's boxes wrap the **third candle's body**, which is **disjoint** from the FVG gap;
-> > a perfect detection scores **IoU_v = 0.00** … the doc's literal metric is unreachable by
-> > construction."
->
-> **That is false.** The detector is named `nq-fvg-detector` and is trained to detect *fair value
-> gaps*: its box wraps the **gap interval itself** (``[c1.high, c3.low]`` for a bullish gap),
-> not the third candle's body. Measured by running the detector over renders of the real NQ bars
-> (`dodgys_dd_quant/vision_validator/visual_cv.py`, 30 windows, 348 boxes):
->
-> | quantity | measured |
-> |---|---|
-> | boxes landing on a rule-engine FVG's **middle bar** | **336 / 348 = 96.6 %** |
-> | the box's class equals the gap's own direction | **96.1 %** |
-> | **1-D vertical IoU vs the gap interval** | **median 0.9518**, mean 0.9193 |
-> | … of which above the doc's `IoU > 0.75` gate | **94.9 %** |
-> | 1-D vertical IoU vs the third candle's **body** | median **0.0000** (the body's disjointness is real — but the boxes are *not* the body) |
->
-> **Consequence:** the design doc's literal metric — the IoU between the detector's box and the
-> rule engine's FVG price interval in the vertical price axis (`iFVG几个模型的讨论.txt` L279) — is
-> **well-posed and reachable**, and the doc's `IoU > 0.75` gate is a *usable* threshold. The layer
-> does **not** need to be re-specified against the gap-opening candle; §C.2 D3 and §D4's "body"
-> substitution are superseded by §C.2-CORR below.
->
-> The audit's *other* findings stand: the render must be **white 640×640** (§B), the doc's
-> **224×224** is a cargo-cult number, and the render must match the training style (§B.5).
->
-> What went wrong methodologically: the audit drew a decisive conclusion about the model's
-> behaviour **without ever executing the model**, from a static reading of the checkpoint. Any
-> claim of the form "the model cannot achieve X" must be measured, not inferred.
-
-**Verdict in one line (superseded by the correction above)** — ~~the layer as specified **cannot
-work**~~ **the layer as specified works**: it needs a **white 640×640 render in the training
-style**, and its metric is the doc's own vertical IoU against the FVG price interval, which the
-detector reaches with a median of 0.95.
+**Verdict in one line** — the layer as specified **cannot work**: it has **two independent fatal
+defects** (a colour/resolution domain mismatch that the design doc already suspects, and a
+**geometric mismatch** that makes the `IoU > 0.75` gate mathematically unreachable), and it must be
+**re-specified as a localisation cross-check on the gap-opening candle**, not as a gap-region IoU.
 
 **Evidence labels used throughout**
 
@@ -54,8 +18,7 @@ detector reaches with a median of 0.95.
 | `[PROPOSAL]` | A design decision made by this audit; not derivable from the artefacts. |
 
 **Constraints honoured** — no `pip install`, no `torch`/`ultralytics` load, no inference executed. The
-checkpoint was inspected **statically** (see §A.0). **This constraint is what produced the error
-above; see the correction.**
+checkpoint was inspected **statically** (see §A.0).
 
 ---
 
@@ -568,39 +531,6 @@ calibrated, not inherited.
 This decouples "is it the right bar?" (x, categorical) from "is it the right vertical extent?"
 (y, continuous) and does not require the detector's 1-bar box to have the same width as anything
 the rule engine produces.
-
-### C.2-CORR — the measured metric (supersedes D1/D3/D4)
-
-Running the detector over renders of the **real** NQ bars (30 windows, 348 boxes, `best.pt`,
-`imgsz=640`, `conf=0.25`) gives:
-
-| measurement | value |
-|---|---|
-| boxes landing on a rule-engine FVG's **middle bar** | **336 / 348 = 96.6 %** |
-| the box's class equals the gap's own direction | **96.1 %** |
-| **1-D vertical IoU vs the gap interval** | **median 0.9518**, mean 0.9193 |
-| … above the doc's `IoU > 0.75` gate | **94.9 %** |
-| 1-D vertical IoU vs the third candle's **body** | median **0.0000** |
-
-The boxes wrap the **gap**, not the body. The doc's metric is therefore the right one:
-
-```
-x  →  bar selection:  the box's horizontal centre maps to a bar index via
-                        k = round(x_centre / (640/W)); it must be the gap's middle bar
-y  →  vertical agreement:  IoU_v = |[y1,y2] ∩ [y(gap_low), y(gap_high)] / |union|
-                            with the gap interval in the rule engine's own coordinates
-class → direction:  bullish_fvg for a bullish gap, bearish_fvg for a bearish one
-```
-
-The gate is `IoU_v ≥ 0.75` — **the doc's own number**, and it is reachable. The 2-D box IoU
-against the gap rectangle over three bars stays capped at ≈ 1/3 (D2) and is reported only as a
-descriptive statistic, as is the IoU against the third candle's body (D3).
-
-**Why the audit got it wrong:** D1's arithmetic is *correct* — the third candle's body really is
-disjoint from the gap — but the premise ("the boxes are the body") was **inferred statically from
-the checkpoint and never measured**. The detector's name, its classes (`bullish_fvg` /
-`bearish_fvg`) and its training annotations all point at the gap; the audit should have said so
-before declaring the metric unreachable.
 
 ### C.3 Summary — perfect-match score per definition
 

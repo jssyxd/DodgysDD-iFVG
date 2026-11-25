@@ -28,22 +28,45 @@ from typing import Sequence
 
 import numpy as np
 
+from dodgys_dd_quant.backtest.abort import cost_buckets, evaluate_abort_criteria
+from dodgys_dd_quant.backtest.accounting import accounting_fields
 from dodgys_dd_quant.backtest.cost_model import (
     CostProfile,
     break_even_cost_r,
     cost_in_r,
     summarise_costs,
 )
-from dodgys_dd_quant.strategy.constants import DECISION_THRESHOLD
+from dodgys_dd_quant.backtest.fold_report import (
+    FOLD_ASSERTIONS,
+    FOLD_REPORT_FIELDS,
+    FoldAssertionError,
+    assert_fold,
+    fold_report_row,
+)
+from dodgys_dd_quant.backtest.kill_switch import (
+    DRIFT_MEDIAN_SHIFT,
+    DRIFT_SPREAD_COLLAPSE,
+    KILL_SWITCH_LEVELS,
+    TOP_DECILE_WIN_RATE_FLOOR,
+    compute_kill_switch,
+)
+from dodgys_dd_quant.strategy.constants import DECISION_THRESHOLD, LABEL_HORIZON_BARS
 from dodgys_dd_quant.strategy.state_machine import Candidate
 
 __all__ = [
     "ForwardOnlyViolation",
+    "FOLD_ASSERTIONS",
+    "FOLD_REPORT_FIELDS",
     "Fold",
+    "FoldAssertionError",
     "FoldReport",
+    "KILL_SWITCH_LEVELS",
     "WalkForwardReport",
     "load_walk_forward_index",
+    "assert_fold",
     "assert_forward_only",
+    "compute_kill_switch",
+    "fold_report_row",
     "simulate_portfolio",
     "summarise_trades",
     "walk_forward",
@@ -166,20 +189,21 @@ def load_walk_forward_index(
         asof = _parse_date(str(asof_raw))
         compact = asof.replace("-", "")
 
-        # Candidate layouts, most specific first. The ML leaf writes the artefact
-        # to `<root>/models/<symbol>/<asof_compact>/` and records it in the fold
-        # entry as `model_dir`; the D3 contract says `<root>/<symbol>/<asof>/`.
-        # Accept all of them so the two leaves interoperate without either
-        # having to know the other's layout.
+        # Candidate layouts, most specific first.  The ML leaf writes the
+        # artefact to ``<models_root>/{symbol}/asof_<YYYYMMDD>/`` and records
+        # that path **relative to the models root**, so the reader resolves it
+        # against whatever root it was given -- the backtest's default
+        # ``--models-root`` is ``artifacts/models`` (F2).  The older absolute
+        # layouts are still accepted so an existing run tree keeps working.
         candidates = []
         if directory:
             d = Path(str(directory))
-            candidates += [d, root / d, root / symbol / d]
+            candidates += [root / d, d, root / symbol / d]
         candidates += [
-            root / "models" / symbol / compact,
-            root / "models" / symbol / f"asof_{compact}",
-            root / symbol / compact,
             root / symbol / f"asof_{compact}",
+            root / symbol / compact,
+            root / "models" / symbol / f"asof_{compact}",
+            root / "models" / symbol / compact,
         ]
         folder = next((c for c in candidates if (c / "meta_label_meta.json").exists()),
                       candidates[0])
@@ -223,17 +247,33 @@ def assert_forward_only(fold: Fold, ts_event: int) -> None:
     The rule is D3's: *a model trained with ``asof = T`` may only be used to
     decide trades with ``ts_event > T``*.
 
-    ``T`` is the **start** of the asof day. The ML leaf's index documents its
+    ``T`` is the **start** of the asof day.  The ML leaf's index documents its
     basis as *"end of the validation window (= the start of the test window)"*,
     so a fold whose asof is 2023-08-01 may decide trades whose signal closed
     after 2023-08-01 00:00. A candidate whose signal closed in the last minutes
     of the previous month was decided *before* the model existed, and is
     correctly rejected — that is a look-ahead, not a rounding artefact.
+
+    The boundary is the **model artefact's own** ``asof``, not merely the
+    fold's.  The two can disagree -- a fold index can point at a model
+    trained later than the window it claims -- and a guard that only looks
+    at the fold's own boundary cannot see it.  The artefact's metadata is
+    the authority (D3's ``asof``), so the *later* of the two boundaries is
+    the one that applies: the model may not decide anything that happened
+    before **either** of them.
     """
-    if ts_event <= fold.asof_ns:
+    boundary = fold.asof_ns
+    boundary_source = f"fold asof={fold.asof}"
+    model_asof = fold.meta.get("asof") if fold.meta else None
+    if model_asof:
+        model_boundary = _date_to_ns(str(model_asof))
+        if model_boundary > boundary:
+            boundary = model_boundary
+            boundary_source = f"model artefact asof={model_asof}"
+    if ts_event <= boundary:
         raise ForwardOnlyViolation(
-            f"model asof={fold.asof} may not decide a trade at ts_event={ts_event} "
-            f"(<= asof boundary {fold.asof_ns})"
+            f"model {boundary_source} may not decide a trade at ts_event={ts_event} "
+            f"(<= boundary {boundary})"
         )
 
 
@@ -252,9 +292,27 @@ class ModelScorer:
     that period — it never silently pretends the model ran.
     """
 
-    def __init__(self, fold: Fold, threshold: float = DECISION_THRESHOLD) -> None:
+    def __init__(
+        self,
+        fold: Fold,
+        threshold: float = DECISION_THRESHOLD,
+        gate: str = "absolute",
+    ) -> None:
         self.fold = fold
         self.threshold = threshold
+        self.gate = gate
+        #: The fold's isotonic calibration (validation-fold fit), if the trainer
+        #: recorded one.  ``None`` means the raw probability is used.
+        self.calibration: dict | None = fold.meta.get("calibration")
+        if gate == "quantile":
+            # The gate threshold is a **validation-fold quantile**, so it is a
+            # causal number: it was known before the test window opened.  An
+            # absolute threshold on uncalibrated probabilities opens and closes
+            # the gate at random across folds (61 of 75 folds approved nothing
+            # on ETH 15m).
+            recorded = fold.meta.get("gate_threshold")
+            if recorded is not None:
+                self.threshold = float(recorded)
         self.model = None
         self.feature_list: list[str] = list(fold.meta.get("feature_list", []))
         self.error: str | None = None
@@ -278,34 +336,32 @@ class ModelScorer:
 
     def score(self, features: dict[str, float]) -> float:
         """P(Win) for one candidate."""
-        return self.score_many([features])[0]
-
-    def score_many(self, features: Sequence[dict[str, float]]) -> list[float]:
-        """P(Win) for a batch of candidates.
-
-        Scoring one row per call is what made the ten-year NQ walk-forward
-        take minutes per fold: LightGBM's per-call overhead dominates when the
-        matrix has a single row.  One call for the whole fold gives the same
-        numbers (LightGBM predicts each row independently) and is orders of
-        magnitude faster.
-        """
         if self.model is None:
             raise RuntimeError(f"model unavailable: {self.error}")
-        if not features:
-            return []
+        if not isinstance(features, dict):
+            raise TypeError(
+                "the scorer needs a feature dict (the model scores a feature "
+                f"vector), got {type(features).__name__}; wire feature_fn "
+                "through ml_pipeline.features.build_features")
         import numpy as np
 
-        matrix = np.empty((len(features), len(self.feature_list)), dtype="float64")
-        for i, row in enumerate(features):
-            if not isinstance(row, dict):
-                raise TypeError(
-                    "the scorer needs a feature dict (the model scores a feature "
-                    f"vector), got {type(row).__name__}; wire feature_fn "
-                    "through ml_pipeline.features.build_features")
-            for j, name in enumerate(self.feature_list):
-                matrix[i, j] = float(row.get(name, 0.0))
-        # LightGBM >= 4 refuses a Dataset for prediction; pass the raw matrix.
-        return [float(v) for v in self.model.predict(matrix)]
+        row = [float(features.get(name, 0.0)) for name in self.feature_list]
+        # LightGBM >= 4 refuses a Dataset for prediction; pass the raw vector.
+        prob = float(self.model.predict(np.asarray([row], dtype="float64"))[0])
+        return self._calibrate(prob)
+
+    def _calibrate(self, prob: float) -> float:
+        """Map a raw probability through the fold's isotonic calibration."""
+        cal = self.calibration
+        if not cal:
+            return prob
+        xs = cal.get("x") or []
+        ys = cal.get("y") or []
+        if not xs or len(xs) != len(ys):
+            return prob
+        import numpy as _np
+
+        return float(_np.interp(prob, xs, ys))
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +369,11 @@ class ModelScorer:
 # ---------------------------------------------------------------------------
 
 
-def simulate_portfolio(candidates: Sequence[Candidate], n_bars: int) -> list[Candidate]:
+def simulate_portfolio(
+    candidates: Sequence[Candidate],
+    n_bars: int,
+    horizon_bars: int = LABEL_HORIZON_BARS,
+) -> list[Candidate]:
     """Select the trades of a **one-position-at-a-time** portfolio.
 
     A signal whose entry bar falls inside an open position's life is
@@ -332,9 +392,20 @@ def simulate_portfolio(candidates: Sequence[Candidate], n_bars: int) -> list[Can
     for cand in ordered:
         if cand.entry_bar < free_from:
             continue                      # a position is open -> drop the signal
+        if cand.outcome == "discarded":
+            # The setup was dropped by the reference's candidate cap before it
+            # could trigger: it is never traded, so it must not hold the book.
+            continue
         selected.append(cand)
-        # the position occupies [entry_bar, exit_bar]
-        free_from = cand.exit_bar + 1 if cand.exit_bar >= 0 else n_bars + 1
+        # The position occupies [entry_bar, exit_bar].  A candidate that has
+        # not resolved **within the label horizon** is still open when the
+        # horizon ends, so it holds the book for the horizon -- not for ever
+        # (a candidate that never resolves would otherwise block the rest of
+        # the sample and collapse the portfolio).
+        if cand.exit_bar >= 0:
+            free_from = cand.exit_bar + 1
+        else:
+            free_from = min(n_bars + 1, cand.entry_bar + int(horizon_bars))
     return selected
 
 
@@ -472,6 +543,16 @@ class FoldReport:
     n_trades: int = 0
     stats: TradeStats = field(default_factory=TradeStats)
     drift: dict = field(default_factory=dict)
+    #: The model's own feature importances (gain), most important first.
+    feature_importances: list = field(default_factory=list)
+    #: The live fold's P(Win) distribution (the drift signal's numerator).
+    live_distribution: dict | None = None
+    #: The model's own training P(Win) distribution (the drift's denominator).
+    train_distribution: dict | None = None
+    #: The realised win rate of the top decile of P(Win).
+    top_decile_win_rate: float = float("nan")
+    #: The three degradation signals of this fold (L4 §F.3).
+    signals: dict = field(default_factory=dict)
     trades: list = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -490,6 +571,11 @@ class FoldReport:
         }
         d.update(self.stats.as_dict())
         d.update({f"drift_{k}": v for k, v in self.drift.items()})
+        d["feature_importances_top10"] = list(self.feature_importances)
+        d["live_prediction_distribution"] = self.live_distribution
+        d["train_prediction_distribution"] = self.train_distribution
+        d["realised_top_decile_win_rate"] = self.top_decile_win_rate
+        d.update({f"signal_{k}": v for k, v in self.signals.items()})
         return d
 
 
@@ -509,10 +595,14 @@ class WalkForwardReport:
     n_approved: int = 0
     n_trades: int = 0
     accounting: str = "drop"
+    #: The kill-switch's verdict on the run (L4 §F.3): the level and the
+    #: three degradation signals it was computed from.
+    kill_switch: dict = field(default_factory=dict)
     trades: list[Candidate] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
+            **accounting_fields(),
             "folds": [f.as_dict() for f in self.folds],
             "portfolio": self.portfolio.as_dict(),
             "baseline": self.baseline.as_dict(),
@@ -524,6 +614,7 @@ class WalkForwardReport:
             "n_approved": self.n_approved,
             "n_trades": self.n_trades,
             "accounting": self.accounting,
+            "kill_switch": dict(self.kill_switch),
         }
 
 
@@ -536,10 +627,13 @@ def walk_forward(
     slippage_ticks: int = 0,
     threshold: float = DECISION_THRESHOLD,
     scorer: "ModelScorer | None" = None,
+    gate: str = "absolute",
     feature_fn=None,
     trials: int = 32,
     trades_per_year: float | None = None,
     portfolio_trades: Sequence[Candidate] | None = None,
+    bars=None,
+    horizon_bars: int = LABEL_HORIZON_BARS,
 ) -> WalkForwardReport:
     """Run the rolling backtest.
 
@@ -558,6 +652,10 @@ def walk_forward(
     trials:
         The number of independent strategy trials already performed — used by
         the deflated Sharpe (D4: 32 arms have already been tried).
+    bars:
+        The traded series, when the caller has it.  With the bars, L4 §C.6's
+        A4 — "does the FVG beat the no-FVG momentum control?" — can be
+        evaluated; without them the criterion is reported as *not evaluated*.
     """
     ordered = sorted(candidates, key=lambda c: (c.ts_event, c.confirm_bar))
     approved: list[Candidate] = []
@@ -607,30 +705,31 @@ def walk_forward(
         ]
         mode = "rule_only"
         p_wins: list[float] = []
+        scored: list[tuple[float, Candidate]] = []
         keep: list[Candidate] = []
         # Each fold must be decided by **its own** model: the model trained up to
         # that fold's asof, and no other. Building the scorer from the fold
         # (rather than reusing one caller-supplied scorer for every fold) is what
         # makes the walk-forward honest.
-        fold_scorer = ModelScorer(fold, threshold=threshold)
+        fold_scorer = ModelScorer(fold, threshold=threshold, gate=gate)
         if not fold_scorer.available and scorer is not None and scorer.available:
             fold_scorer = scorer
         if fold_scorer.available:
             mode = "model"
             for cand in in_window:
                 assert_forward_only(fold, cand.ts_event)
-            rows = [
-                feature_fn(cand) if feature_fn is not None else cand
-                for cand in in_window
-            ]
-            if hasattr(fold_scorer, "score_many"):
-                probs = fold_scorer.score_many(rows)
-            else:
-                probs = [fold_scorer.score(row) for row in rows]
-            for cand, p in zip(in_window, probs):
+                feats = feature_fn(cand) if feature_fn is not None else None
+                p = fold_scorer.score(feats) if feats is not None else fold_scorer.score(cand)
                 cand.p_win = p
                 p_wins.append(p)
-                if p >= threshold:
+                scored.append((p, cand))
+                # the *fold's* threshold, not the caller's: under the quantile
+                # gate it is that fold's validation quantile
+                is_approved = p >= fold_scorer.threshold
+                # the archive records the decision per candidate; the engine's
+                # object carries it so nothing has to be reconstructed later
+                cand.gate_approved = bool(is_approved)
+                if is_approved:
                     keep.append(cand)
         else:
             keep = list(in_window)
@@ -652,6 +751,34 @@ def walk_forward(
             n_approved=len(keep),
         )
         report.drift = _drift(p_wins, fold, keep)
+        report.feature_importances = _feature_importances(fold_scorer)
+        # the inputs of the degradation monitor (L4 §F.3)
+        report.live_distribution = _distribution(p_wins)
+        report.train_distribution = fold.meta.get("train_prediction_distribution")
+        report.top_decile_win_rate = _top_decile_win_rate(scored)
+        # The three degradation signals of this fold (L4 §F.3).
+        drift_abs = report.drift.get("abs_mean_p_minus_base", float("nan"))
+        top_rate = _top_decile_win_rate(scored)
+        churn = (
+            _importance_churn(
+                fold_reports[-1].feature_importances, report.feature_importances
+            )
+            if fold_reports
+            else float("nan")
+        )
+        report.signals = {
+            "prediction_drift": bool(
+                math.isfinite(drift_abs) and drift_abs > DRIFT_MEDIAN_SHIFT
+            ),
+            "calibration": bool(
+                math.isfinite(top_rate) and top_rate < TOP_DECILE_WIN_RATE_FLOOR
+            ),
+            "importance_churn": bool(
+                math.isfinite(churn) and churn > DRIFT_SPREAD_COLLAPSE
+            ),
+        }
+        report.drift["realised_top_decile_win_rate"] = top_rate
+        report.drift["importance_churn"] = churn
         fold_reports.append(report)
 
     # --- the portfolio: one position at a time, across the whole sample ----
@@ -660,7 +787,7 @@ def walk_forward(
     # approved candidates and *drops* the blocked signals.
     accounting = "drop"
     if portfolio_trades is None:
-        portfolio_trades = simulate_portfolio(approved, n_bars)
+        portfolio_trades = simulate_portfolio(approved, n_bars, horizon_bars)
     else:
         accounting = "defer"
     windows = [f.test_window_ns() for f in folds]
@@ -679,7 +806,7 @@ def walk_forward(
     # candidate the rule engine produced, with no model gate applied. Using the
     # (already gated) portfolio here would compare the model against itself and
     # make D4's "report against the rule-only baseline" impossible.
-    baseline_trades = simulate_portfolio(ordered, n_bars)
+    baseline_trades = simulate_portfolio(ordered, n_bars, horizon_bars)
     baseline_stats = summarise_trades(baseline_trades, profile, slippage_ticks)
 
     equity = np.array([t.r_multiple for t in portfolio_trades if t.is_closed], dtype=np.float64)
@@ -687,6 +814,96 @@ def walk_forward(
 
     for report in fold_reports:
         report.accounting = accounting
+
+    # --- the kill-switch (L4 §F.3) ----------------------------------------
+    # The signals are computed per fold above; the switch aggregates them
+    # into the level that says whether the next fold may be traded.
+    consecutive_below = 0
+    for report in reversed(fold_reports):
+        if report.signals.get("calibration"):
+            consecutive_below += 1
+        else:
+            break
+    k1_folds = sum(1 for report in fold_reports if any(report.signals.values()))
+    # L4 §C.6's abort criteria, evaluated on the concatenated OOS.  The
+    # criteria that need the baselines (the cost-heavy subsets, the momentum
+    # control) are reported as *not evaluated* rather than silently passed.
+    # The no-FVG control (L4 §C.6's A4): with the bars, the control runs on
+    # the same series and the comparison is gross against gross.
+    control_gross = None
+    if bars is not None:
+        from dodgys_dd_quant.analysis.momentum_baseline import run_momentum_baseline
+
+        control = run_momentum_baseline(bars)
+        if math.isfinite(control.expectancy_r):
+            control_gross = float(control.expectancy_r)
+    # A2: does the gross edge survive the costs?  The population is split
+    # at 0.3 R of round-trip cost and each bucket's gross expectancy is
+    # measured.
+    cost_split = cost_buckets(
+        portfolio_trades,
+        profile=profile,
+        slippage_ticks=slippage_ticks,
+    )
+    # A3: a high-AUC model with no net lift that has learned the cost.  The
+    # inputs come from the fold's own artefact.
+    # The criterion is about *the model*, so the AUC and the lift are the
+    # run's aggregate over the folds that measured them, and the features are
+    # the last fold's.
+    aucs: list[float] = []
+    lifts: list[float] = []
+    top_features: list[str] = []
+    for fold_report, fold in zip(fold_reports, folds):
+        meta = fold.meta or {}
+        auc = meta.get("auc_test")
+        lift = meta.get("expectancy_lift_r")
+        if auc is not None and math.isfinite(float(auc)):
+            aucs.append(float(auc))
+        if lift is not None and math.isfinite(float(lift)):
+            lifts.append(float(lift))
+    auc_test = sum(aucs) / len(aucs) if aucs else None
+    expectancy_lift = sum(lifts) / len(lifts) if lifts else None
+    if fold_reports:
+        top_features = [
+            str(name)
+            for name, _ in (fold_reports[-1].feature_importances or [])
+        ]
+    abort_report = evaluate_abort_criteria(
+        expectancy_net_r=float(portfolio_stats.expectancy_net_r),
+        ci95_lo=float(portfolio_stats.ci95_lo),
+        ci95_hi=float(portfolio_stats.ci95_hi),
+        expectancy_r_gross=float(portfolio_stats.expectancy_r),
+        momentum_baseline_gross_r=control_gross,
+        cost_heavy_subsets_positive=cost_split["only_cost_heavy_positive"]
+        if cost_split["evaluated"]
+        else None,
+        auc_test=auc_test,
+        expectancy_lift_r=expectancy_lift,
+        top_features=top_features,
+    )
+    # The degradation monitor's inputs (L4 §F.3): the live fold's P(Win)
+    # distribution against the model's own training distribution, the realised
+    # win rate of the top decile, and the churn of the top features.
+    last = fold_reports[-1] if fold_reports else None
+    churn = float("nan")
+    if len(fold_reports) >= 2:
+        churn = float(
+            _importance_churn(
+                fold_reports[-2].feature_importances,
+                fold_reports[-1].feature_importances,
+            )
+        )
+    kill_switch = compute_kill_switch(
+        abort_report=abort_report,
+        p_pred_distribution=(last.live_distribution if last else None),
+        p_pred_distribution_train=(last.train_distribution if last else None),
+        realised_top_decile_win_rate=(
+            float(last.top_decile_win_rate) if last else float("nan")
+        ),
+        top_importance_churn=churn,
+        consecutive_folds_below=consecutive_below,
+        k1_folds_within_6_months=k1_folds,
+    )
 
     return WalkForwardReport(
         folds=fold_reports,
@@ -700,8 +917,98 @@ def walk_forward(
         n_candidates=len(ordered),
         n_approved=len(approved),
         n_trades=len(portfolio_trades),
+        kill_switch=kill_switch,
         trades=portfolio_trades,
     )
+
+
+def _distribution(values: Sequence[float]) -> dict[str, float] | None:
+    """The mean and the standard deviation of a prediction distribution."""
+    finite = np.asarray([v for v in values if np.isfinite(v)], dtype=np.float64)
+    if finite.size == 0:
+        return None
+    return {
+        "mean": float(finite.mean()),
+        "sd": float(finite.std(ddof=1)) if finite.size > 1 else 0.0,
+        "n": int(finite.size),
+    }
+
+
+def _top_decile_win_rate(scored: Sequence[tuple[float, Candidate]]) -> float:
+    """The realised win rate of the candidates the model scored highest.
+
+    L4 §F.3's second signal: the top decile of P(Win) must clear 0.45.
+    """
+    if not scored:
+        return float("nan")
+    ordered = sorted(scored, key=lambda item: item[0], reverse=True)
+    top = ordered[: max(1, len(ordered) // 10)]
+    closed = [cand for _, cand in top if cand.is_closed]
+    if not closed:
+        return float("nan")
+    return sum(1 for cand in closed if cand.r_multiple > 0) / len(closed)
+
+
+def _feature_importances(scorer, limit: int = 10) -> list[tuple[str, float]]:
+    """The model's own feature importances (gain), most important first.
+
+    L4 §F.2 wants them in the fold report and §F.3's third degradation signal
+    is the churn between consecutive folds, so they have to come from the
+    model that was actually used.
+    """
+    model = getattr(scorer, "model", None)
+    if model is None:
+        return []
+    try:
+        gains = model.feature_importance(importance_type="gain")
+    except Exception:  # pragma: no cover - depends on the runtime
+        return []
+    names = list(getattr(scorer, "feature_list", []))
+    pairs = [
+        (names[i] if i < len(names) else f"feature_{i}", float(gain))
+        for i, gain in enumerate(gains)
+    ]
+    pairs.sort(key=lambda item: item[1], reverse=True)
+    return pairs[:limit]
+
+
+def _importance_churn(
+    previous: Sequence[tuple[str, float]],
+    current: Sequence[tuple[str, float]],
+) -> float:
+    """The share of the top features' gain that changed since the previous fold.
+
+    L4 §F.3's third signal: "if the top-2 features change between
+    consecutive folds by more than half their gain, the model is refitting to
+    noise".
+    """
+    if not previous or not current:
+        return float("nan")
+    before = dict(previous)
+    after = dict(current)
+    top = set(list(before)[:2]) | set(list(after)[:2])
+    total = sum(abs(before.get(name, 0.0)) + abs(after.get(name, 0.0)) for name in top)
+    if total <= 0.0:
+        return float("nan")
+    changed = sum(
+        abs(before.get(name, 0.0) - after.get(name, 0.0)) for name in top
+    )
+    return changed / total
+
+
+def _top_decile_win_rate(scored: Sequence[tuple[float, Candidate]]) -> float:
+    """The realised win rate of the candidates the model scored highest.
+
+    L4 §F.3's second signal: the top decile of P(Win) must clear 0.45.
+    """
+    if not scored:
+        return float("nan")
+    ordered = sorted(scored, key=lambda item: item[0], reverse=True)
+    top = ordered[: max(1, len(ordered) // 10)]
+    closed = [cand for _, cand in top if cand.is_closed]
+    if not closed:
+        return float("nan")
+    return sum(1 for cand in closed if cand.r_multiple > 0) / len(closed)
 
 
 def _drift(p_wins: list[float], fold: Fold, approved: list[Candidate]) -> dict:

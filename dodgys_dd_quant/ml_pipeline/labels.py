@@ -154,11 +154,17 @@ def build_labels(
         )
 
     # --- the first bar that can resolve the trade -------------------------
+    # The bars frame is stamped at the bar's **close** (the same convention
+    # the D2 candidate log uses), so the bar whose close equals ``ts_event``
+    # is the confirmation bar -- the decision bar.  It cannot resolve the
+    # trade, because the decision was taken on its close.  The scan
+    # therefore starts at the first bar that closes **strictly after**
+    # ``ts_event``, which is the entry bar the engine fills at the open.
     bar_ts = b["ts_event"].to_numpy(dtype="int64")
     bar_low = b["low"].to_numpy(dtype="float64")
     bar_high = b["high"].to_numpy(dtype="float64")
     n_bars = len(b)
-    start = np.searchsorted(bar_ts, ts, side="right")  # strictly after ts_event
+    start = np.searchsorted(bar_ts, ts, side="right")
 
     stop_offset = np.full(n_cand, -1, dtype="int64")
     target_offset = np.full(n_cand, -1, dtype="int64")

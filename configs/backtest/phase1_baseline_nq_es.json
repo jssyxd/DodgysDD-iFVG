@@ -1,0 +1,53 @@
+[
+  {
+    "venues": [
+      {
+        "name": "XCME",
+        "oms_type": "NETTING",
+        "account_type": "MARGIN",
+        "starting_balances": [
+          "1000000 USD"
+        ],
+        "base_currency": "USD",
+        "fill_model": {
+          "fill_model_path": "nautilus_trader.backtest.models:OneTickSlippageFillModel",
+          "config_path": "nautilus_trader.backtest.config:FillModelConfig",
+          "config": {
+            "prob_fill_on_limit": 1.0,
+            "prob_fill_on_stop": 1.0,
+            "prob_slippage": 0.0,
+            "random_seed": 0
+          }
+        },
+        "fee_model": {
+          "fee_model_path": "nautilus_trader.backtest.models:FixedFeeModel",
+          "config_path": "nautilus_trader.backtest.config:FixedFeeModelConfig",
+          "config": {
+            "commission": "4.50 USD",
+            "charge_commission_once": false
+          }
+        }
+      }
+    ],
+    "data": [
+      {
+        "catalog_path": "artifacts/catalog/nq_es",
+        "data_cls": "nautilus_trader.model.data:Bar",
+        "bar_spec": "1-MINUTE-LAST-EXTERNAL",
+        "instrument_id": "NQ.XCME",
+        "instrument_ids": [
+          "NQ.XCME",
+          "ES.XCME"
+        ]
+      }
+    ],
+    "engine": {
+      "trader_id": "T-1",
+      "instance_id": "970f16b6-bc47-4d2f-abc9-73fba5e0a909",
+      "strategies": []
+    },
+    "chunk_size": 5000,
+    "raise_exception": true,
+    "dispose_on_completion": true
+  }
+]

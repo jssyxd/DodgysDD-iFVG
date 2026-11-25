@@ -24,6 +24,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from dodgys_dd_quant.strategy.constants import (
+    LABEL_HORIZON_BARS as _LABEL_HORIZON_BARS,
+)
+
 # ---------------------------------------------------------------------------
 # D3 decision rule: take the trade iff P(Win) >= threshold.
 # ---------------------------------------------------------------------------
@@ -42,8 +46,12 @@ FOLD_STEP_MONTHS = 1
 # has hit neither its stop nor its target after LABEL_HORIZON_BARS is "still
 # open" and stays unlabelled (D2: label = -1).  The walk-forward embargo is
 # derived from it in ``splits.py`` -- it is never assumed.
+#
+# It is defined in the *strategy's* constants, because the rule engine applies
+# the same cap when it resolves a candidate's outcome; re-exported here so
+# both sides use one number (F6).
 # ---------------------------------------------------------------------------
-LABEL_HORIZON_BARS = 240
+LABEL_HORIZON_BARS = _LABEL_HORIZON_BARS
 DEFAULT_BAR_INTERVAL_MINUTES = 1
 
 # ---------------------------------------------------------------------------
@@ -56,6 +64,11 @@ LGBM_EARLY_STOPPING_ROUNDS = 50
 LGBM_SEED = 20261122
 LGBM_BAGGING_FRACTION = 0.9
 LGBM_FEATURE_FRACTION = 0.9
+#: The thread count LightGBM trains with.  It is **pinned** because
+#: LightGBM's result depends on how many threads split the data, even with
+#: ``deterministic=True``: without this the trained artefact -- and every
+#: number quoted from it -- wobbles between runs.
+LGBM_NUM_THREADS = 4
 
 #: A fold with fewer rows than this cannot support a model -> recorded as skipped.
 MIN_TRAIN_ROWS = 200

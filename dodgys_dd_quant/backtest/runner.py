@@ -12,6 +12,7 @@ D2 candidate log, runs the walk-forward and prints the report.
 from __future__ import annotations
 
 import argparse
+import time
 import math
 import sys
 from dataclasses import replace
@@ -19,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
+from dodgys_dd_quant.backtest.accounting import accounting_line
 from dodgys_dd_quant.backtest.cost_model import COST_PROFILES, get_profile
 from dodgys_dd_quant.backtest.walk_forward import (
     ModelScorer,
@@ -69,6 +71,15 @@ LAYOUTS = (
 )
 
 
+def timeframe_minutes(timeframe: str) -> float | None:
+    """Bar interval in minutes for a ``15m`` / ``1h`` / ``1d`` string."""
+    text = str(timeframe).strip().lower()
+    for suffix, factor in (("min", 1.0), ("m", 1.0), ("h", 60.0), ("d", 1440.0)):
+        if text.endswith(suffix) and text[: -len(suffix)].isdigit():
+            return float(text[: -len(suffix)]) * factor
+    return None
+
+
 def resolve_lake_path(symbol: str, timeframe: str = "1m") -> Path:
     """Find the governed parquet for ``symbol``/``timeframe`` in the lake.
 
@@ -90,6 +101,30 @@ def resolve_lake_path(symbol: str, timeframe: str = "1m") -> Path:
         tried.append(str(root))
     raise FileNotFoundError(
         f"no governed parquet for {symbol}/{timeframe}; searched: {tried}"
+    )
+
+
+def _clip_bars_ns(bars, lo: int, hi: int):
+    """Keep only the bars whose open time is inside ``[lo, hi)``."""
+    import numpy as np
+
+    ts = np.asarray(bars.ts, dtype=np.int64)
+    mask = (ts >= lo) & (ts < hi)
+    if bool(mask.all()):
+        return bars
+    keep = np.flatnonzero(mask)
+    if keep.size == 0:
+        raise SystemExit("the execution window leaves no signal bars")
+    sl = slice(int(keep[0]), int(keep[-1]) + 1)
+    return type(bars)(
+        ts=ts[sl],
+        open=bars.open[sl],
+        high=bars.high[sl],
+        low=bars.low[sl],
+        close=bars.close[sl],
+        volume=bars.volume[sl],
+        symbol=bars.symbol,
+        timeframe=bars.timeframe,
     )
 
 
@@ -133,77 +168,50 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--preset", default="honest", choices=sorted(PRESETS), help="rule set")
     p.add_argument("--inversion-window", default="code", choices=("code", "doc"))
     p.add_argument(
-        "--rr",
+        "--horizon-minutes",
         type=float,
+        default=0.0,
+        help="maximum holding period in minutes; 0 keeps the engine's 240 bars "
+             "(at 15m that is 60 hours, which outlives the intraday premise)",
+    )
+    p.add_argument(
+        "--gate",
+        default="absolute",
+        choices=("absolute", "quantile"),
+        help="how the meta-label gate picks its threshold: a fixed probability "
+             "(the doc's 0.58) or the fold's validation-quantile",
+    )
+    p.add_argument(
+        "--execution-data",
         default=None,
-        help="reward:risk multiple (default: the preset's). The payoff sweep.",
+        help="a finer series (e.g. 1m) on which the signal's stop/target are "
+             "resolved; without it the signal bar's own high/low decides",
     )
-    p.add_argument(
-        "--stop-window",
-        default=None,
-        choices=("confirm", "confirm_plus_one"),
-        help="the window the stop is scanned over. 'confirm_plus_one' is what "
-             "the reference does and it is a look-ahead (the stop depends on "
-             "the fill bar's range).",
-    )
-    p.add_argument(
-        "--stop-placement",
-        default=None,
-        choices=("wick", "body", "ifvg", "swing"),
-        help="where the stop sits: the window extreme, the body edge, the gap's "
-             "far edge, or the recent swing (the doc's 'beyond the swing').",
-    )
-    p.add_argument(
-        "--stop-mult",
-        type=float,
-        default=None,
-        help="move the stop away from the entry by this factor. The cost of a "
-             "trade is a fixed number of dollars, so a wider stop lowers the "
-             "cost in R.",
-    )
-    p.add_argument(
-        "--killzone",
-        action="store_true",
-        help="gate the signals on the doc's NY killzones (09:30-11:30 and "
-             "13:30-15:30 ET). The reference computes setups on every bar and "
-             "gates only the alerts, so this is the doc's rule, not the code's.",
-    )
-    p.add_argument(
-        "--min-checklist",
-        type=int,
-        default=None,
-        help="keep only candidates whose checklist score is at least N. This is "
-             "the implementable version of the doc's 'A/A+ only' gate: the "
-             "five named conditions are booleans, the grade thresholds are not "
-             "defined in any artefact (D8).",
-    )
-    p.add_argument(
-        "--min-checklist-known",
-        type=int,
-        default=0,
-        help="also require that at least K of the checklist's conditions were "
-             "decidable (4 without the vision layer).",
-    )
-    p.add_argument(
-        "--vision-signals",
-        default=None,
-        help="a parquet of the vision layer's signals (scripts/vision_signals.py), "
-             "joined to the candidates on ts_event.",
-    )
-    p.add_argument(
-        "--vision-conf",
-        type=float,
-        default=None,
-        help="keep only the candidates whose detector confidence is at least "
-             "this. The IoU gate is the doc's; the confidence is what carries "
-             "the signal.",
-    )
+    p.add_argument("--execution-timeframe", default=None)
     p.add_argument("--models-root", default="artifacts/models")
     p.add_argument("--candidates-out", default=None, help="path of the D2 candidate log")
+    p.add_argument(
+        "--archive",
+        default=None,
+        help="directory for the durable archive of this run: runs.parquet "
+             "(one row) + candidates.parquet (every candidate, with features, "
+             "the gate decision and the final label)",
+    )
     p.add_argument("--reference-symbol", default=None, help="SMT reference instrument")
     p.add_argument("--regime", default="none", choices=("none", "vxn", "dvol"))
     p.add_argument("--threshold", type=float, default=DECISION_THRESHOLD)
-    p.add_argument("--trials", type=int, default=32, help="independent trials for the DSR")
+    p.add_argument(
+        "--trials",
+        type=int,
+        default=32,
+        help="independent trials for the DSR (overridden by --trials-registry)",
+    )
+    p.add_argument(
+        "--trials-registry",
+        default=None,
+        help="the write-once trial ledger: the DSR's trial count comes from "
+             "it and the run is appended to it",
+    )
     p.add_argument("--limit", type=int, default=0, help="use only the first N bars (smoke test)")
     p.add_argument("--no-write-candidates", action="store_true")
     p.add_argument(
@@ -216,7 +224,14 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+_ARCHIVE_T0 = 0.0
+
+
 def main(argv: list[str] | None = None) -> int:
+    import time as _time
+
+    global _ARCHIVE_T0
+    _ARCHIVE_T0 = _time.time()
     args = build_parser().parse_args(argv)
 
     # --- data -------------------------------------------------------------
@@ -232,22 +247,14 @@ def main(argv: list[str] | None = None) -> int:
     # --- configuration ----------------------------------------------------
     config: RuleConfig = PRESETS[args.preset]
     config = replace(config, symbol=args.symbol, timeframe=args.timeframe)
-    if args.rr is not None:
-        if args.rr <= 0:
-            raise SystemExit(f"--rr must be positive, got {args.rr}")
-        config = replace(config, rr=args.rr)
-    if args.stop_window is not None:
-        config = replace(config, stop_window=args.stop_window)
-    if args.stop_placement is not None:
-        config = replace(config, stop_placement=args.stop_placement)
-    if args.stop_mult is not None:
-        if args.stop_mult <= 0:
-            raise SystemExit(f"--stop-mult must be positive, got {args.stop_mult}")
-        config = replace(config, stop_mult=args.stop_mult)
-    if args.killzone:
-        config = replace(config, killzone_gate=True)
     if args.inversion_window == "doc":
         config = config.with_doc_window()
+    bar_minutes = timeframe_minutes(args.timeframe)
+    if args.horizon_minutes and bar_minutes:
+        config = replace(
+            config,
+            horizon_bars=max(1, int(round(args.horizon_minutes / bar_minutes))),
+        )
     if config.min_gap_atr_mult is None:
         mp = market_params(args.symbol)
         if args.preset == "doc":
@@ -273,8 +280,60 @@ def main(argv: list[str] | None = None) -> int:
             print(f"warning: no reference instrument ({exc})")
 
     # --- rule engine ------------------------------------------------------
+    # --- the execution series --------------------------------------------
+    # It decides *which barrier came first*; the signal series only decides
+    # *whether* to trade and at what price.  The signal series is clipped to
+    # the execution window so no candidate can be resolved against an era the
+    # execution data does not cover (that silent look-ahead once manufactured
+    # a t-statistic of 35).
+    exec_bars = None
+    horizon_exec_bars = 0
+    if args.execution_data:
+        from dodgys_dd_quant.backtest.execution import (
+            execution_horizon_bars,
+            resolve_on_execution,
+        )
+
+        exec_tf = args.execution_timeframe or "1m"
+        exec_minutes = timeframe_minutes(exec_tf)
+        if not exec_minutes:
+            raise SystemExit(f"cannot read the execution timeframe {exec_tf!r}")
+        exec_bars = load_bars(args.execution_data, symbol=args.symbol, timeframe=exec_tf)
+        bars = _clip_bars_ns(
+            bars,
+            int(exec_bars.ts[0]),
+            int(exec_bars.ts[-1]) + int(exec_bars.interval_ns),
+        )
+        # the horizon is a *time*, so it is converted to the execution series'
+        # own bar count: 240 bars of 15m must not become 240 minutes of 1m
+        horizon_minutes = args.horizon_minutes or (config.horizon_bars * bar_minutes)
+        horizon_exec_bars = execution_horizon_bars(horizon_minutes, exec_minutes)
+        print(
+            f"signal series clipped to the {exec_tf} execution window: "
+            f"{len(bars)} bars"
+        )
+
     log = run_state_machine(bars, config, regime=regime, reference=reference)
     print(f"candidates: {len(log)}")
+
+    if exec_bars is not None:
+        resolution = resolve_on_execution(
+            log.candidates,
+            exec_bars,
+            horizon_bars=horizon_exec_bars,
+            signal_bars=bars,
+        )
+        print(
+            f"execution: {exec_tf} ({len(exec_bars)} bars), horizon "
+            f"{horizon_minutes:g} min = {horizon_exec_bars} bars, "
+            f"{resolution['changed']} outcome(s) changed, "
+            f"{resolution['skipped']} skipped (outside the execution series)"
+        )
+        if resolution["skipped"]:
+            print(
+                "warning: the execution series does not cover the whole signal "
+                "period; the skipped candidates keep their coarse outcome"
+            )
 
     out_path = args.candidates_out
     if out_path is None:
@@ -284,45 +343,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"candidate log (D2): {written}")
 
     # --- costs ------------------------------------------------------------
-    profile = get_profile(args.cost_profile or ("binance" if args.symbol.isupper() and "USDT" in args.symbol else "nq"))
+    from dodgys_dd_quant.backtest.cost_model import profile_for
+
+    profile = profile_for(args.symbol, args.cost_profile)
 
     # --- walk forward -----------------------------------------------------
-    # The checklist filter is a **rule-layer** filter: the D2 log keeps every
-    # candidate (nothing is erased), but only the ones that pass it are traded.
-    traded = log.candidates
-    if args.min_checklist is not None:
-        traded = [
-            c for c in log.candidates
-            if c.checklist_score >= args.min_checklist
-            and c.checklist_known >= args.min_checklist_known
-        ]
-        print(f"checklist filter: score >= {args.min_checklist}, "
-              f"known >= {args.min_checklist_known} -> {len(traded)}/{len(log.candidates)} "
-              f"candidates traded")
-
-    # The vision layer's filter: keep the candidates the detector confirmed
-    # with at least the given confidence.  A candidate the detector never saw
-    # has no confidence and is therefore dropped.
-    if args.vision_signals and args.vision_conf is not None:
-        import pyarrow.parquet as pq
-
-        sig = pq.read_table(args.vision_signals)
-        conf_by_ts = {
-            int(t): float(c)
-            for t, c in zip(sig.column("ts_event").to_numpy(),
-                            sig.column("vision_confidence").to_numpy())
-        }
-        kept = [c for c in traded
-                if conf_by_ts.get(int(c.ts_event), -1.0) >= args.vision_conf]
-        print(f"vision filter: confidence >= {args.vision_conf} -> "
-              f"{len(kept)}/{len(traded)} candidates traded")
-        traded = kept
-
     folds = load_walk_forward_index(args.models_root, args.symbol, args.timeframe)
     scorer = None
     feature_fn = None
     if folds:
-        scorer = ModelScorer(folds[-1], threshold=args.threshold)
+        scorer = ModelScorer(folds[-1], threshold=args.threshold, gate=args.gate)
         if not scorer.available:
             print(f"warning: model unavailable ({scorer.error}); running rule-only")
         # The model scores a *feature vector*, so the candidate must be joined to
@@ -377,31 +407,145 @@ def main(argv: list[str] | None = None) -> int:
 
     portfolio_trades = None
     if args.portfolio == "defer":
-        if args.min_checklist is not None:
-            raise SystemExit(
-                "--min-checklist cannot be combined with --portfolio defer: the "
-                "deferred arm re-runs the engine and would ignore the filter. "
-                "Use the default 'drop' accounting."
-            )
         # the experiment harness's accounting: a blocked signal stays pending
         # and may still trigger later, at a different price
         portfolio_trades = run_deferred_portfolio(bars, config)
 
+    # The DSR's trial count comes from the write-once ledger when one is
+    # given: L4 §F.5 says the number of trials must be knowable, not guessed.
+    registry = None
+    trials = int(args.trials)
+    if args.trials_registry:
+        from dodgys_dd_quant.backtest.trials import TrialRegistry, trial_count_for
+
+        registry = TrialRegistry(args.trials_registry)
+        trials = trial_count_for(registry)
+        print(f"trial registry: {registry.trial_count()} registered trial(s) "
+              f"-> DSR trials = {trials}")
+
     report = walk_forward(
-        traded,
+        log.candidates,
         len(bars),
         folds,
         profile=profile,
         slippage_ticks=args.slippage_ticks,
         threshold=args.threshold,
         scorer=scorer,
+        gate=args.gate,
         feature_fn=feature_fn,
-        trials=args.trials,
+        trials=trials,
         portfolio_trades=portfolio_trades,
+        bars=bars,
+        horizon_bars=config.horizon_bars,
     )
+
+    if args.archive:
+        from dodgys_dd_quant.backtest import records as _records
+
+        archive = Path(args.archive)
+        gate_ids = {
+            id(c) for c in log.candidates if getattr(c, "gate_approved", None) is True
+        }
+        # ``report.trades`` is the one-position portfolio's selection, which is
+        # the same set for a rule-only run and for a gated one
+        selected_ids = {id(c) for c in (getattr(report, "trades", None) or [])}
+        bars_df = pd.DataFrame(
+            {
+                "ts_event": bars.ts.astype("int64") + bars.interval_ns,
+                "open": bars.open,
+                "high": bars.high,
+                "low": bars.low,
+                "close": bars.close,
+                "volume": bars.volume,
+            }
+        )
+        cand_df = pd.DataFrame(log.to_table())
+        feats = None
+        try:
+            if len(cand_df):
+                feats = build_features(cand_df, bars_df, extra_features=True)
+        except Exception:  # noqa: BLE001 - the archive still records the run
+            feats = None
+        frame = _records.candidate_frame(
+            log,
+            run_id=f"{args.symbol}:{args.timeframe}:{args.preset}",
+            symbol=args.symbol,
+            timeframe=args.timeframe,
+            preset=args.preset,
+            horizon_minutes=(args.horizon_minutes or config.horizon_bars * bar_minutes),
+            bars=bars,
+            selected_ids=selected_ids,
+            gate_approved_ids=gate_ids,
+            folds=folds,
+            features=feats,
+        )
+        archive.mkdir(parents=True, exist_ok=True)
+        _records.write_parquet(frame, archive / "candidates.parquet")
+        run_row = _records.run_record(
+            run_id=f"{args.symbol}:{args.timeframe}:{args.preset}",
+            symbol=args.symbol,
+            timeframe=args.timeframe,
+            preset=args.preset,
+            data_path=str(path),
+            n_bars=len(bars),
+            first_ts=int(bars.ts[0]),
+            last_ts=int(bars.ts[-1]),
+            profile_name=profile.name,
+            slippage_ticks=args.slippage_ticks,
+            horizon_minutes=(args.horizon_minutes or config.horizon_bars * bar_minutes),
+            regime=args.regime,
+            report=report,
+            runtime_s=float(time.time() - _ARCHIVE_T0),
+            gate=args.gate,
+            models_root=args.models_root,
+            n_folds=len(folds),
+        )
+        _records.write_parquet(pd.DataFrame([run_row]), archive / "runs.parquet")
+        print(f"archive: {archive} ({len(frame):,} candidates)")
+
+    if registry is not None:
+        registry.record(
+            name=f"{args.symbol}:{args.timeframe}:{args.preset}",
+            config={
+                "symbol": args.symbol,
+                "timeframe": args.timeframe,
+                "preset": args.preset,
+                "cost_profile": profile.name,
+                "slippage_ticks": int(args.slippage_ticks),
+            },
+            oos_returns=[float(r) for r in report.equity_r.tolist()],
+        )
+        print(f"trial registry: run registered ({registry.trial_count()} trials)")
 
     _print_report(report, profile, args)
     return 0
+
+
+def _print_kill_switch(report) -> None:
+    """Print the kill-switch's verdict and the abort criteria behind it.
+
+    The repo's most important safety net -- "stop and publish the negative
+    result" -- has to be **visible** in the run's output, or it is a rule
+    nobody reads.
+    """
+    switch = dict(getattr(report, "kill_switch", {}) or {})
+    if not switch:
+        return
+    level = switch.get("level", "none")
+    signals = switch.get("signals", {}) or {}
+    fired = [name for name, value in signals.items() if value]
+    print()
+    print(f"KILL-SWITCH: {level}"
+          + (f"   signals fired: {', '.join(fired)}" if fired else ""))
+    criteria = switch.get("abort_criteria") or {}
+    if criteria:
+        triggered = criteria.get("fired") or []
+        not_evaluated = criteria.get("not_evaluated") or []
+        print(
+            "ABORT CRITERIA (L4 C.6): "
+            + (f"fired {', '.join(triggered)}" if triggered else "none fired")
+            + (f"   not evaluated: {', '.join(not_evaluated)}" if not_evaluated else "")
+        )
 
 
 def _print_report(report, profile, args) -> None:
@@ -410,6 +554,9 @@ def _print_report(report, profile, args) -> None:
     print(f"WALK-FORWARD REPORT  {args.symbol} {args.timeframe}  preset={args.preset}  "
           f"window={INVERSION_WINDOW if args.inversion_window == 'code' else DOC_INVERSION_WINDOW}")
     print(f"cost profile: {profile.name}  slippage: {args.slippage_ticks} tick(s)")
+    # D4: every headline number says which arm it came from.  The census arm
+    # (one position per candidate) is correlated and is not a result.
+    print(accounting_line())
     print("=" * 100)
     hdr = (f"{'fold':<12}{'mode':<11}{'cands':>7}{'appr':>7}{'trades':>8}"
            f"{'win%':>7}{'E[R]':>9}{'E_net':>9}{'PF':>7}{'t':>7}{'CI95':>20}")
@@ -441,6 +588,7 @@ def _print_report(report, profile, args) -> None:
     print(f"Sharpe (per trade) = {_fmt(report.sharpe)}   "
           f"deflated Sharpe = {_fmt(report.deflated_sharpe)}   "
           f"DSR p-value = {_fmt(report.dsr_p_value)}   trials = {report.trials}")
+    _print_kill_switch(report)
     print()
 
 

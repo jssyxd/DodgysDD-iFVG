@@ -81,7 +81,6 @@ sourced; today only VXN (NQT/QQQ), DVOL (crypto) and CMC20 (crypto cross-section
 | | |
 |---|---|
 | **Sufficient for phase 1 on NQ?** | **No.** The lake holds NQ/ES **1-minute only for one week** (7,490 / 7,489 rows). The missing thing is not "1-minute NQ" but **multi-year 1-minute NQ **per contract** with a documented roll rule** — a roll gap prints like a liquidity sweep. |
-| **Free mirrors for CME 1m?** | **None.** Every free mirror was scanned: Twelve Data's lake source is an **equities** dataset (129 stock/ETF tickers, zero futures, in all three splits), Yahoo serves ~1–2 days of 1-minute, cryptohftdata has no candle family, OKX needs ~14,000 requests per symbol. **Databento (~$10–30) is the only route** — exactly what the design doc already recommends. |
 | **Sufficient on crypto?** | **Conditional.** BTCUSDT/ETHUSDT have **2,046,240 gap-free 1-minute bars** (2023-01-01 → 2026-11-21) and support the 6/1/1 walk-forward arithmetically (40 folds). |
 | **Top missing items** | ① multi-year NQ+ES 1m per contract + roll rule (**Databento, ~$100–300**); ② the roll-rule detector; ③ intraday VXN/VIX; ④ order-book imbalance for NQ. |
 
@@ -203,7 +202,43 @@ source.
 
 ---
 
-## 6. Where to look
+## 6. Addendum -- the implementation rounds (2026-11-23)
+
+Ten rounds of the `bench/` capability benchmark closed the gaps this report
+names.  Every claim below is **executable**: `bash autoresearch.sh` runs 83
+probes over the same code, 1,903 capability points, **0 invariant failures**.
+
+| Gap the audits named | Closed by |
+|---|---|
+| Q1/Q2 -- the vision contract did not exist | `vision_validator/visual_cv.py`: the white 640x640 render, the **body**-IoU, the calibrated threshold, the three-part gate, the gap IoU demoted to a descriptor |
+| Q3 -- 19 of 30 rules absent | the leg-origin tracker (the origin belongs to the gap's **tracker**, not the trade side), the break-even level and its resolution, the liquidity-target universe, the equal-level store, the leg-scoped sweep flag, the unreclaimed HTF zones, the 50-per-direction candidate cap, the HTF confluence gate, the setup-history cap, both readings of the origin bar, the direction filter and the reference's HTF-fractal sweep object |
+| Q4 -- the regime was inert | `analysis/regime_correlation.py`: the per-band E[R], the CR1 errors and the moving-block permutation p-value; the regime now reaches the order decision |
+| Q5 -- the rolling stack had open findings | the forward-only guard consults the artefact's own `asof`, the D3 index is where the backtest reads it, the feature key is `(ts_event, side, fvg_bar3)`, one label definition, the embargo follows the horizon, the trial registry drives the DSR's trial count and the **CSCV/PBO** exists |
+| INV1 -- the RL could have opened a position | `rl/action_space.py` carries no field that can |
+| Q5 -- a roll gap can fake a sweep | `data_pipeline/roll.py` and the engine's roll guard exclude the bars around a contract switch |
+
+**The trading statistics were re-measured, and they moved.**  The coverage
+work uncovered two accounting defects -- the engine's timezone helper
+returned seconds where nanoseconds were expected (so every "New York" value
+was five hours off), and a candidate that never resolved held the book open
+for ever, which collapsed the one-position-at-a-time portfolio.  Both are
+fixed, and `AGENTS.md` now carries the re-measured numbers: the rule-only arm
+is **32,521 trades, E[R] -0.0183 R gross, PF 0.973, t = -2.34** and the
+ML-gated arm **282 trades, E[R] 0.0000 R, PF 1.000**, with `auc_test` still
+**0.485-0.522**.  The verdict is unchanged and, if anything, sharper: **the
+rule-only arm loses before costs** -- and it loses to a *plain ATR-normalised
+momentum control* (444,928 trades at **+0.0455 R gross** against the FVG's
+**-0.0183 R gross**), so L4 §C.6's A4 fires: the FVG contributes nothing
+before costs.  With the control and the criteria in place the run's own
+verdict is **K3 -- kill the project** (all five criteria are evaluated;
+A1, A2 and A4 fire and the degradation monitor's calibration and churn
+signals fire too), and the runner prints it next to the headline.  Every t-statistic is quoted from the
+one-position-at-a-time arm (D4), and the run is reproducible (LightGBM's
+thread count is pinned).
+
+---
+
+## 7. Where to look
 
 | Question | File |
 |---|---|

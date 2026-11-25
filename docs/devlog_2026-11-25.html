@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DodgysDD iFVG — 开发记录 2026-11-25</title>
+<style>
+ :root { --fg:#1c1e21; --muted:#606770; --border:#d0d4da; --surface:#f6f7f9; --accent:#1b5e9b; }
+ @media (prefers-color-scheme: dark) { :root { --fg:#e6e8eb; --muted:#a0a6ad; --border:#3a3f45; --surface:#1c1f23; --accent:#6aa7dd; } }
+ body { margin:0; padding:32px 20px; font:16px/1.65 -apple-system,"Segoe UI","Noto Sans SC",sans-serif; color:var(--fg); background:var(--surface); }
+ main { max-width: 980px; margin: 0 auto; background: transparent; }
+ h1 { font-size: 28px; margin: 0 0 4px; }
+ h2 { font-size: 20px; margin: 34px 0 10px; border-bottom:1px solid var(--border); padding-bottom:6px; }
+ h3 { font-size: 17px; margin: 22px 0 6px; }
+ p, li { color: var(--fg); }
+ .muted { color: var(--muted); }
+ table { border-collapse: collapse; width: 100%; margin: 10px 0 18px; font-size: 14.5px; }
+ th, td { border: 1px solid var(--border); padding: 6px 9px; text-align: left; }
+ th { background: var(--surface); }
+ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13.5px; }
+ pre { background: var(--surface); border:1px solid var(--border); padding: 12px; overflow-x:auto; }
+ .tag { display:inline-block; padding:1px 7px; border:1px solid var(--border); border-radius:10px; font-size:12.5px; color:var(--muted); }
+ ul { margin: 6px 0 14px 22px; }
+</style></head><body><main>
+<h1>DodgysDD iFVG · 开发记录</h1>
+<p class="muted">2026-11-25 · 由本次会话整理（按主题重写的开发日志，不是逐字转录；较早的对话在工作区里只保留了摘要）。
+仓库：<code>git@github.com:jssyxd/DodgysDD-iFVG.git</code></p>
+
+<h2>1. 这个项目是什么</h2>
+<p>DodgysDD 的 <em>Inversion Fair Value Gap</em>（iFVG）策略：价格扫过流动性、三根 K 线留下 FVG，未守住则反转为
+阻力/支撑（<em>inversion</em>），在失败的回测处入场，止损放在最近摆动之外，目标下一处流动性。四层结构：</p>
+<ol>
+<li><b>确定性规则层</b>（<code>strategy/state_machine.py</code>）——因果摆动、一次性扫荡位、ATR 缺口下限、反转窗口
+<code>[1,15]</code>/<code>[7,15]</code>、保本完好门、五布尔 checklist（<b>只报告，不过滤</b>）、VXN/DVOL 制度（滞后一天）；</li>
+<li><b>视觉交叉验证</b>（<code>vision_validator/</code>）——白底 640×640 渲染、对第三根 K 线实体的 2-D IoU、可标定阈值；
+原文档的 “IoU &gt; 0.75” 按构造不可达（实测中位数 0.0000，87.9% 恰为 0）；</li>
+<li><b>元标注</b>（<code>ml_pipeline/</code>）——三屏障标签（2R 目标/1R 止损/未决），6 个月训练 / 1 个月验证 / 1 个月测试
+的滚动折，purge 与 embargo，LightGBM，门控只决定“做不做”；</li>
+<li><b>执行/风控</b>——RL 层（只管理仓位、不能开仓）与 NautilusTrader 策略（<code>strategy/dodgys_strategy.py</code>）。</li>
+</ol>
+
+<h2>2. 关键结论（全部为实测）</h2>
+<ul>
+<li><b>1 分钟不是决策周期。</b> 同一合约、同一特征、同一成本，只换周期，毛边际的符号会翻转：</li>
+</ul>
+<table class="t"><thead><tr><th>配置</th><th>笔数</th><th>胜率 %</th><th>E[R] 毛</th><th>成本 R</th><th>E_net</th><th>PF</th></tr></thead><tbody><tr><td>ETH 1m + DVOL</td><td>39645</td><td>35.0</td><td>-0.0003</td><td>0.636</td><td>-0.636</td><td>1.000</td></tr><tr><td>ETH 15m + DVOL</td><td>4221</td><td>35.4</td><td>+0.0475</td><td>0.111</td><td>-0.063</td><td>0.912</td></tr><tr><td>ETH 15m doc window</td><td>3462</td><td>35.0</td><td>+0.0485</td><td>0.111</td><td>-0.041</td><td>1.075</td></tr><tr><td>ETH 15m ML gated (quantile)</td><td>435</td><td>35.2</td><td>+0.0126</td><td>0.098</td><td>-0.091</td><td>1.020</td></tr></tbody></table>
+<p>Binance 1m 上往返手续费约等于 <b>1.5 倍 1-ATR 止损</b>；15m 降到 0.29 倍，实测策略成本中位 0.11 R。周期是此前“无边际”结论的<strong>主因</strong>。</p>
+<ul>
+<li><b>成本决定结论。</b> 文档 Phase-1 的门槛是 NQ/ES、$4.5 往返、1–2 tick 滑点。在 NQ 1m 上成本只有 0.03 R，
+但毛边际本身为负：</li>
+</ul>
+<table class="t"><thead><tr><th>配置</th><th>笔数</th><th>胜率 %</th><th>E[R] 毛</th><th>E_net</th><th>PF</th><th>t</th></tr></thead><tbody><tr><td>NQ doc, $9.50, 4h, 2020-11→2024-07</td><td>1798</td><td>29.9</td><td>-0.0464</td><td>-0.0791</td><td>0.934</td><td>-1.33</td></tr><tr><td>NQ doc, $14.50, 4h</td><td>1798</td><td>29.9</td><td>-0.0464</td><td>-0.0903</td><td>0.934</td><td>-1.33</td></tr><tr><td>NQ doc, $9.50, 60h</td><td>1877</td><td>30.7</td><td>-0.0173</td><td>-0.0481</td><td>0.975</td><td>-0.50</td></tr><tr><td>NQ honest, $9.50, 4h</td><td>16488</td><td>31.0</td><td>-0.0215</td><td>-0.0948</td><td>0.969</td><td>-1.87</td></tr><tr><td>ES doc, $9.50, 4h</td><td>865</td><td>27.7</td><td>-0.1329</td><td>-0.2729</td><td>0.816</td><td>-2.76</td></tr><tr><td>ES honest, $9.50, 4h</td><td>9157</td><td>30.1</td><td>-0.0916</td><td>-0.4215</td><td>0.869</td><td>-6.23</td></tr><tr><td>NQ doc, $9.50, 4h, 2015→2025 全历史</td><td>5348</td><td>33.2</td><td>-0.0093</td><td>-0.0822</td><td>0.986</td><td>-0.47</td></tr></tbody></table>
+<ul>
+<li><b>元标注没有预测力</b>：在 284,083 个候选（98 个格子，含 MNQ/MES）上重训，136 折，
+AUC 均值 <b>0.512</b>（0.398–0.671），门控 lift 均值 −0.006，136 折里 68 折为正——与早先 0.485–0.522 无差别。</li>
+<li><b>预注册检验两次都被拒绝</b>：30m 组（5 个加密标的）中位 E_net +0.009 R 但这个簇在 N=72 的 DSR 下 p=0.869；
+MNQ 15m doc（E_net +0.0769 R, n=998, t=2.22）在 N=106 下 DSR p=<b>0.838</b>。规则在跑之前写死，跑完按规则拒绝。</li>
+<li><b>无 FVG 动量对照</b>：在同一批 1m BTC 数据上，朴素 ATR 动量系统毛边际 +0.0455 R，而 iFVG 规则引擎 −0.0183 R。
+即“扣成本前”规则层也没有优势。</li>
+</ul>
+
+<h2>3. 数据：从“一周”到“五年”</h2>
+<ul>
+<li>加密：BTC/ETH/SOL/BNB/XRP 的 <b>1m 到 1d 七个周期</b>（2023-01 → 2026-10/11），由 Binance Vision 5m 拉取或 1m 严格重采样，
+完整桶才保留（0 个残缺桶），写前过湖的五条不变量审计；资金费率 5 标的 × 4,200 行（8h），OKX 仅 ~96 天。</li>
+<li>CME：<code>NQ_1m</code> 实为 <b>3,664,241 根（2015-01 → 2025-07）</b>，<code>ES_1m</code> 646,948 根（2020-11 → 2024-07）；
+由此重采样出 5m/15m/30m/1h/2h/4h；日线必须用交易所日线（CME 每日维护缺口使 24h 桶永不完整）。</li>
+<li>湖里旧的 1h/4h/1d 泳道多为一月残桩（744/186/31 根），这也是此前无法做多年高周期测试的原因。</li>
+</ul>
+
+<h2>4. 基准矩阵与候选日志</h2>
+<p>规则层（无模型）在 <b>98 个格子</b>上跑完：5 个加密标的 + MNQ/MES，7 个周期，2 个预设（<code>honest</code> 代码派生、<code>doc</code> 带 ATR 缺口过滤），
+DVOL/VXN 制度，各标的自身 tick 的成本，一次只持一仓（D4）。</p>
+<ul>
+<li>70 格为净正；除 30m 外每个周期的中位格为负；70 格最好 t=2.66（XRP 30m honest）在 70 次试验下不构成证据。</li>
+<li><code>logs/rule_candidates/</code>：<b>284,083 个候选 × 58 列</b>（含未下单），35 个候选字段 + 全部特征 + 单仓选中标志 + 最终 <code>y</code>
+（93,386 目标 / 181,271 止损 / 9,426 未决）。</li>
+</ul>
+
+<h2>5. NautilusTrader 移植</h2>
+<p>规则引擎是整段历史条形的纯函数（逐事件调用是二次复杂度），因此 Nautilus 策略消费<b>预计算的候选 feed</b>，
+自己负责执行与持仓记账：市价入场 + bracket（限价 TP、止损市价 SL）、一次一仓、可选时间退出；1m 改为逐 bar 手动出场
+（bracket 两条腿在同一根 1m bar 内都成交会让净额仓位无符号下溢，实测 <code>Quantity::from_raw raw=3.4e38</code>）。</p>
+<table class="t"><thead><tr><th>标的</th><th>周期</th><th>引擎 / NT 开仓</th></tr></thead><tbody><tr><td>BTCUSDT</td><td>30m</td><td>1137 / 1136</td></tr><tr><td>ETHUSDT</td><td>30m</td><td>1129 / 1130</td></tr><tr><td>SOLUSDT</td><td>30m</td><td>1230 / 1232</td></tr><tr><td>BNBUSDT</td><td>30m</td><td>1234 / 1230</td></tr><tr><td>XRPUSDT</td><td>30m</td><td>1116 / 1111</td></tr><tr><td>MNQ</td><td>15m</td><td>—</td></tr><tr><td>MNQ</td><td>30m</td><td>2126 / 2120</td></tr><tr><td>MES</td><td>1h</td><td>209 / 207</td></tr></tbody></table>
+<p>68 格中 61 格在 1% 容差内；7 格超差全是 <code>honest</code>（无 ATR 过滤）且 NT 少开仓——持有窗口在成交后一根 bar 起算，
+定义差而非丢单（全部 orders 导出 0 个 REJECTED）。逐笔 R 对账（按订单 tags 精确回连）：相关 0.994–0.999，平均 |ΔR| 约 0.02。</p>
+
+<h2>6. 这条路上的十个真实缺陷</h2>
+<ol>
+<li>时区助手把秒当纳秒——所有“纽约时间”偏 5 小时；</li>
+<li>熔断开关被 import 却从未调用；</li>
+<li>未决候选永久占用仓位，单仓组合从 32,521 笔塌到 46 笔；</li>
+<li>参考实现的保本出场被套用到所有 preset；</li>
+<li>LightGBM 线程数未固定，引用数字每次漂；</li>
+<li>CR1 标准误除以观测数，区间小了约 4 倍；</li>
+<li>28.0 档位边界与特征管线不一致；</li>
+<li>三个退化信号从未被喂过；</li>
+<li>“净对净”对比被风险定义操纵（改为毛对毛）；</li>
+<li>NaN 被当成“通过”（改为“未评估”）；</li>
+</ol>
+<p>以及后来的：NFS 并发写把 16 个分区写成 root 也不可读；Binance 成本档案对所有标的用同一 tick（XRP 每笔 −12 R）；
+1m 的 bracket 双腿竞态。</p>
+
+<h2>7. 交付物</h2>
+<table><thead><tr><th>路径</th><th>内容</th></tr></thead><tbody>
+<tr><td><code>dodgys_dd_quant/</code></td><td>规则引擎、视觉契约、ML 管道、回测与熔断、Nautilus 策略与 runner</td></tr>
+<tr><td><code>bench/</code> + <code>autoresearch.sh</code></td><td>167 个可执行能力探针，5,908 分，0 不变量失败</td></tr>
+<tr><td><code>research/</code></td><td>审计、E1–E6、数据通道、Pine→Nautilus 映射</td></tr>
+<tr><td><code>logs/rule_candidates/</code></td><td>284k 候选 + 98 格统计（含特征与 y）</td></tr>
+<tr><td><code>artifacts/</code></td><td>矩阵、Nautilus 结果、试验登记表（被 gitignore）</td></tr>
+</tbody></table>
+
+<h2>8. 现在的位置</h2>
+<p>用文档自己的设定（NQ/ES、$4.5 往返 + 1–2 tick、多年 1m）跑完，<strong>毛边际在每一个变体上都是负的</strong>（NQ doc −0.046 R，ES doc −0.133 R，NQ 全历史 −0.009 R），成本只有 0.03–0.08 R —— 所以“成本决定结论”对 NQ 不成立，规则层本身没有优势。元标注 AUC 0.512；两次预注册都被拒绝。
+下一步只剩两类诚实的路：<b>换信息</b>（订单流/OFI、真实 ICT 时段结构、tick 级执行效应）或<b>换设定</b>
+（把 NQ/ES 的多年 1m 用在 15m/1h 的信号周期上，让成本占比继续下降）。</p>
+<p class="muted">状态：184 个单元/集成测试通过；<span class="tag">167/167 probes</span>
+<span class="tag">0 invariant failures</span> <span class="tag">E-1/E2E 可复现</span></p>
+</main></body></html>
