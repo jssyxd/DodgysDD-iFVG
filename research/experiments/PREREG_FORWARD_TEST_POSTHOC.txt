@@ -1,0 +1,28 @@
+===== POST-HOC A   frozen config, BTCUSDT 2023-01..2026-11 (calibrated DVOL bands) =====
+checklist filter: score >= 3, known >= 4 -> 1046/7087 candidates traded
+PORTFOLIO (1 at a time, drop)    n=884     win%= 32.8  E[R]= -0.0158  E_net= -0.4484  PF= 0.976  t= -0.33  CI95=[-0.109,0.077]
+                                 mean cost=0.4326 R   break-even cost=-0.0158 R   PF_net=0.535   total R=-14.00   max consec losses=15
+                                 mean cost=0.4326 R   break-even cost=-0.0158 R   PF_net=0.535   total R=-14.00   max consec losses=15
+candidates=1046  approved=1046  trades=884
+Sharpe (per trade) = -0.0112   deflated Sharpe = 0.0036   DSR p-value = 0.9964   trials = 64
+===== POST-HOC A1  frozen config, BTCUSDT 2025-07-26..2026-11 (strictly forward) =====
+checklist filter: score >= 3, known >= 4 -> 275/2332 candidates traded
+PORTFOLIO (1 at a time, drop)    n=238     win%= 33.6  E[R]=  0.0084  E_net= -0.3729  PF= 1.013  t=  0.09  CI95=[-0.172,0.189]
+                                 mean cost=0.3813 R   break-even cost=0.0084 R   PF_net=0.599   total R=2.00   max consec losses=12
+                                 mean cost=0.3813 R   break-even cost=0.0084 R   PF_net=0.599   total R=2.00   max consec losses=12
+candidates=275  approved=275  trades=238
+Sharpe (per trade) = 0.0059   deflated Sharpe = 0.0114   DSR p-value = 0.9886   trials = 64
+===== POST-HOC A2  frozen config, BTCUSDT 2023-01..2025-07-25 =====
+checklist filter: score >= 3, known >= 4 -> 769/4743 candidates traded
+PORTFOLIO (1 at a time, drop)    n=644     win%= 32.6  E[R]= -0.0217  E_net= -0.4737  PF= 0.968  t= -0.39  CI95=[-0.130,0.087]
+                                 mean cost=0.4520 R   break-even cost=-0.0217 R   PF_net=0.515   total R=-14.00   max consec losses=15
+                                 mean cost=0.4520 R   break-even cost=-0.0217 R   PF_net=0.515   total R=-14.00   max consec losses=15
+candidates=769  approved=769  trades=644
+Sharpe (per trade) = -0.0154   deflated Sharpe = 0.0030   DSR p-value = 0.9970   trials = 64
+===== POST-HOC A'  plain reference arm, BTCUSDT 2023-01..2026-11 =====
+PORTFOLIO (1 at a time, drop)    n=16133   win%= 34.6  E[R]=  0.0380  E_net= -0.4266  PF= 1.058  t=  3.38  CI95=[0.016,0.060]
+                                 mean cost=0.4646 R   break-even cost=0.0380 R   PF_net=0.554   total R=613.00   max consec losses=25
+                                 mean cost=0.4646 R   break-even cost=0.0380 R   PF_net=0.554   total R=613.00   max consec losses=25
+candidates=40651  approved=40651  trades=16134
+Sharpe (per trade) = 0.0266   deflated Sharpe = 0.8463   DSR p-value = 0.1537   trials = 64
+POSTHOC DONE

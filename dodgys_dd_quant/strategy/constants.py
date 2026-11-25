@@ -126,6 +126,20 @@ KILLZONE_CRYPTO_UTC: Final[tuple[str, str]] = ("00:00", "02:00")
 #: VXN regime bin edges (DOC L265-266): ``0 / 18 / 28 / 200``.
 VXN_REGIME_BINS: Final[tuple[float, float, float, float]] = (0.0, 18.0, 28.0, 200.0)
 
+#: Crypto DVOL regime bin edges.  The doc names DVOL as the crypto regime
+#: index but specifies **no bands**, and the VXN edges are meaningless on the
+#: DVOL scale: the DVOL daily close runs 34–90 (p50 = 51), so every reading
+#: fell above 28 and the crypto regime read **81.8 % "high", 0 % "normal"** —
+#: which silently removed the ``vxn_regime_normal`` checklist condition and
+#: collapsed the checklist to 3.6 % of the candidates on BTCUSDT.
+#:
+#: **Calibration (2026-11-24, post-hoc):** the edges are the DVOL quantiles
+#: that reproduce the *VXN's own* daily occupancy on the lake's VXN series
+#: (low 35.6 %, normal 48.5 %, high 15.9 %).  The rule is "match the
+#: reference regime's occupancy", not "pick round numbers", so the two indices
+#: mean the same thing.
+DVOL_REGIME_BINS: Final[tuple[float, float, float, float]] = (0.0, 45.6, 60.1, 200.0)
+
 #: Regime labels: 0 low-vol range, 1 normal trend, 2 high-vol panic.
 REGIME_LOW: Final[int] = 0
 REGIME_NORMAL: Final[int] = 1

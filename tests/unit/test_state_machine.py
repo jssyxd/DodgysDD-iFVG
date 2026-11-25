@@ -553,3 +553,32 @@ def test_a_stop_multiplier_widens_the_stop():
         assert b.stop_price == pytest.approx(
             b.entry_price + (a.stop_price - a.entry_price) * 2.0
         )
+
+
+# ---------------------------------------------------------------------------
+# The regime indices' bands
+# ---------------------------------------------------------------------------
+
+
+def test_the_dvol_bands_are_calibrated_to_the_dvol_scale():
+    """The crypto regime index must not use the VXN's bands.
+
+    The DVOL daily close runs 34-90, so the VXN edges (0 / 18 / 28 / 200) made
+    every reading "high": the crypto regime read 81.8 % high and 0 % normal,
+    which silently removed the ``vxn_regime_normal`` checklist condition and
+    collapsed the checklist to 3.6 % of the BTCUSDT candidates.
+    """
+    from dodgys_dd_quant.strategy.constants import DVOL_REGIME_BINS, VXN_REGIME_BINS
+    from dodgys_dd_quant.strategy.regime import regime_label
+
+    assert DVOL_REGIME_BINS != VXN_REGIME_BINS
+    # the DVOL edges must sit inside the index's own range, not the VXN's
+    assert DVOL_REGIME_BINS[1] > VXN_REGIME_BINS[2], (
+        "the DVOL low/normal edge must be above the VXN's high edge, or the "
+        "crypto index cannot produce a normal regime"
+    )
+    # a typical DVOL reading must land in a non-degenerate regime
+    assert regime_label(51.0, DVOL_REGIME_BINS) == 1
+    # and the three labels must all be reachable
+    labels = {regime_label(v, DVOL_REGIME_BINS) for v in (40.0, 51.0, 75.0)}
+    assert labels == {0, 1, 2}

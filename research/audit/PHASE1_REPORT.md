@@ -238,7 +238,45 @@ The configuration above was **selected on NQ**. Running it unchanged on two othe
 **But the filtered configuration does not generalise.** On ES the killzone + checklist arm is **−0.140 R** (t = −1.16), and even without the checklist ES carries only +0.008 R (t = 0.18) — against NQ's +0.032 R. The session and checklist filters were chosen on NQ and they do not carry to a different instrument, and the ES panel's 55 % weekday coverage makes its sample thin as well. **This is the pre-registered test failing, and it is reported as such.**
 
 
-## 9. Verdict against the design doc's phase-1 gate
+## 9. The pre-registered forward test
+
+The configuration above was selected on NQ after ~60 arms. The test was **pre-registered and committed before it ran** (`research/audit/PREREGISTRATION_FORWARD_TEST.md`): the frozen configuration, the out-of-sample data, and the PASS/FAIL/INCONCLUSIVE criteria were all fixed in advance.
+
+**The out-of-sample instrument is BTCUSDT** (SMT reference ETHUSDT, 2023-01 → 2026-11) — a different market, and with a **strictly forward** sub-window (2025-07-26 → 2026-11-21) that is later than any data the selection could have seen.
+
+| test | trades | net E[R] | gross E[R] | 95 % CI | verdict |
+| --- | --- | --- | --- | --- | --- |
+| A | 192 | -0.5220 | **-0.0938** | [-0.289, 0.102] | **INCONCLUSIVE** (< 200 trades) |
+| A1 | 75 | -0.4056 | **0.0400** | [-0.285, 0.365] | **INCONCLUSIVE** (< 200 trades) |
+| A2 | 115 | -0.5844 | **-0.1652** | [-0.412, 0.082] | **INCONCLUSIVE** (< 200 trades) |
+| A' | 16133 | -0.4266 | **0.0380** | [0.016, 0.060] | **FAIL** (net E[R] ≤ 0) |
+| A1' plain reference arm, BTCUSDT 2025-07-26..2026-11 | 5182 | -0.4522 | **0.0299** | [-0.009, 0.069] | **FAIL** (net E[R] ≤ 0) |
+| A2' plain reference arm, BTCUSDT 2023-01..2025-07-25 | 10926 | -0.4142 | **0.0420** | [0.015, 0.069] | **FAIL** (net E[R] ≤ 0) |
+
+### 9.1 The post-hoc re-run, and why the first one was underpowered
+
+The three inconclusive results had a **mechanical** cause, found by inspecting the candidates rather than by re-tuning anything: the **crypto regime index was never calibrated**. `DvolRegimeIndex` binned the DVOL series with the **VXN's** edges (0 / 18 / 28 / 200), but the DVOL daily close runs **34–90** (p50 = 51) — so every reading fell above 28 and the crypto regime read **81.8 % "high", 0 % "normal"**. The ``vxn_regime_normal`` checklist condition was therefore *never* true on crypto and the checklist could almost never reach 3 (**3.6 %** of the BTCUSDT candidates against NQ's 21.1 %).
+
+The bands were calibrated to the DVOL quantiles reproducing the **VXN's own** daily occupancy (35.6 / 48.5 / 15.9 %); the calibrated index now occupies 35.7 / 48.1 / 16.2 %. Re-running the **identical** commands with that defect fixed:
+
+| test | trades | net E[R] | gross E[R] | 95 % CI | verdict |
+| --- | --- | --- | --- | --- | --- |
+| A | 884 | -0.4484 | **-0.0158** | [-0.109, 0.077] | **FAIL** (net E[R] ≤ 0) |
+| A1 | 238 | -0.3729 | **0.0084** | [-0.172, 0.189] | **FAIL** (net E[R] ≤ 0) |
+| A2 | 644 | -0.4737 | **-0.0217** | [-0.130, 0.087] | **FAIL** (net E[R] ≤ 0) |
+| A' | 16133 | -0.4266 | **0.0380** | [0.016, 0.060] | **FAIL** (net E[R] ≤ 0) |
+
+### 9.2 The verdict
+
+1. **The frozen configuration does not generalise.** On BTCUSDT it turns a +0.038 R gross edge into **−0.016 R**. The same was already true on ES. The session and checklist filters are **NQ-specific** — they are not part of the strategy, they are part of the NQ result.
+2. **The rule engine's gross edge does replicate**: on BTCUSDT over the full window +0.0380 R, t = 3.38, CI [0.016, 0.060] — the same magnitude as NQ, on a different market.
+3. **But not in the only strictly-forward window available**: +0.0299 R, t = 1.51, CI **[−0.009, 0.069]** — the interval includes zero, so the pre-registered criterion 2 is **not** met.
+4. **Net expectancy is hopeless on crypto at any of these edges**: the Binance round trip is 0.46 R against a 0.03–0.04 R edge. That is a fact about crypto's fee structure, not about the strategy.
+
+Nothing here re-opens the selection: the configuration was not re-tuned on the basis of the test, and the pre-registered criteria were applied as written.
+
+
+## 10. Verdict against the design doc's phase-1 gate
 
 | Gate | Required | Measured | Met? |
 | --- | --- | --- | --- |
@@ -247,8 +285,12 @@ The configuration above was **selected on NQ**. Running it unchanged on two othe
 | Costs | ~$4.50 + 1–2 ticks | applied (0.033–0.045 R on the filtered arm) | yes |
 | Population | A/A+ only | not computable — no artefact defines a grade (D8); the five named booleans are used instead | substituted |
 | Sample | 10 years, 3.66 M bars | the filtered arm trades 2020-11 → 2025-07 because the SMT is undecidable before ES starts | partly |
+| Out of sample | the configuration must hold on unseen data | the pre-registered forward test **FAILS** (§9): on BTCUSDT the frozen configuration is −0.016 R, and the rule's edge does not clear zero in the strictly-forward window | **No** |
 
-### 9.1 The answer to "entry or payoff?"
+So the NQ row above is an **in-sample** result. The only genuinely out-of-sample verdict in this report is §9, and it is negative.
+
+
+### 10.1 The answer to "entry or payoff?"
 
 **The edge is in the entry.** The evidence, in order of size:
 
@@ -261,20 +303,21 @@ The configuration above was **selected on NQ**. Running it unchanged on two othe
 
 So the strategy was never a payoff problem: the reference's 1:2 target was fine. It was an **entry** problem — the setups outside the NY session and outside the named conditions are noise, and they cost more in fees than they earn.
 
-### 9.2 What is still missing
+### 10.2 What is still missing
 
 **No configuration survives the multiple-testing correction.** The deflated Sharpe is computed against the ~60 arms tried in this project; the best p-value is 0.0672 and the net-positive arms are all above 0.4. A configuration *selected* as the best of 60 on the same sample it is measured on is a hypothesis, not a result.
 
-The right next step is therefore **not** another filter but a **pre-registered confirmation** — and the first such test has already been run and **failed on ES** (§8). What survives is narrower and more honest:
+The pre-registered confirmation has now been run (§9), and it **failed**: the frozen configuration does not generalise to BTCUSDT (gross E[R] −0.016 R against the plain arm's +0.038 R), and the rule's own edge does not clear zero in the strictly-forward window (CI [−0.009, 0.069]). What survives is narrower and more honest:
 
 * the **rule engine's gross edge** replicates on BTCUSDT (+0.038 R, t = 3.38), so it is a property of the rule, not of NQ;
-* the **filters** (session, checklist) were selected on NQ and do not carry to another instrument;
-* **no configuration survives the multiple-testing correction** on the sample it was selected on.
+* the **filters** (session, checklist) were selected on NQ and do not carry to another instrument — they make BTCUSDT *worse* (§9);
+* **no configuration survives the multiple-testing correction** on the sample it was selected on;
+* **the edge is not significant in the only strictly-forward window that exists** (§9).
 
 The vision layer is **built and it works** — mechanically correct, and it **corrects a wrong audit**: the doc's `IoU > 0.75` gate is reachable (the median IoU against the gap interval is 0.95). But as a *trading filter* it is **redundant with the checklist**: applied to the portfolio it makes the expectancy monotonically worse (§7.2). It is a geometry cross-check, not an independent signal.
 
 
-## 10. What would move the number
+## 11. What would move the number
 
 | lever | measured effect | status |
 | --- | --- | --- |
@@ -286,5 +329,6 @@ The vision layer is **built and it works** — mechanically correct, and it **co
 | the vision layer's detector confidence | z = +2.26 on the raw census, but net E[R] +0.047 → +0.020 on the portfolio | **built and measured** — §7; redundant with the checklist |
 | the meta-labeler | raises gross E[R] but AUC 0.47–0.53 | **measured, exhausted** on the current features |
 | the same configuration on another instrument | BTCUSDT +0.038 R (t = 3.38) — the edge replicates; ES −0.140 R | **done** — the edge generalises, the filters do not |
+| the pre-registered forward test (§9) | the frozen config FAILS on BTCUSDT; the rule's own edge is +0.030 R with a CI that includes 0 in the strictly-forward window | **done and failed** |
 
-A pre-registered forward test of the frozen configuration is the only thing left before this can be called an edge.
+The pre-registered test has been run and it does not confirm the configuration. What is left is **not another filter**: it is NQ data past 2025-07-25 (which does not exist yet), a materially cheaper cost base, or a rule with a larger edge. The gross edge is real on two markets, and it is roughly a third of the NQ round trip.

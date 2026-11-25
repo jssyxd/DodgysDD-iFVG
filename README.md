@@ -92,6 +92,13 @@ The boxes wrap the *gap*. The **detector's confidence** then discriminates on th
 the expectancy **monotonically worse** (+0.047 → +0.020), because it is not independent of the
 checklist: both detect clean price action. The layer is a geometry cross-check, not a signal.
 
+**The pre-registered forward test failed.** The frozen configuration was committed before it
+ran (`research/audit/PREREGISTRATION_FORWARD_TEST.md`). On BTCUSDT (a different market, with a
+strictly-forward window after the NQ sample ends) it is **−0.016 R gross** while the *plain* arm is
+**+0.038 R** — the filters are NQ-specific and hurt elsewhere. The rule's gross edge does replicate
+(+0.0380 R, t = 3.38, CI [0.016, 0.060]), but **not in the strictly-forward window** (+0.0299 R,
+t = 1.51, CI [−0.009, 0.069], which includes zero).
+
 Full report with every figure parsed from the executed output:
 [research/audit/PHASE1_REPORT.md](research/audit/PHASE1_REPORT.md).
 

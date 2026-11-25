@@ -118,6 +118,23 @@ def row(values: list[str]) -> str:
     return "| " + " | ".join(values) + " |"
 
 
+#: The pre-registered criteria (PREREGISTRATION_FORWARD_TEST.md §5), applied
+#: mechanically so the report cannot flatter a result.
+MIN_POWERED_TRADES = 200
+
+
+def _verdict(r: dict) -> str:
+    """PASS / FAIL / INCONCLUSIVE under the pre-registered criteria."""
+    n = int(float(r["n"]))
+    if n < MIN_POWERED_TRADES:
+        return f"**INCONCLUSIVE** (< {MIN_POWERED_TRADES} trades)"
+    if float(r["enet"]) <= 0.0:
+        return "**FAIL** (net E[R] ≤ 0)"
+    if float(r["lo"]) <= 0.0 <= float(r["hi"]):
+        return "**FAIL** (the gross CI includes 0)"
+    return "**PASS**"
+
+
 def main() -> int:
     matrix = parse_matrix()
     ablation = parse_preset_rows("PHASE1_NQ_ABLATION.txt")
@@ -449,8 +466,72 @@ def main() -> int:
                  "sample thin as well. **This is the pre-registered test failing, and it is "
                  "reported as such.**\n")
 
+    # ------------------------------------------------------- forward test
+    fwd = parse_sections("PREREG_FORWARD_TEST.txt")
+    post = parse_sections("PREREG_FORWARD_TEST_POSTHOC.txt")
+    if fwd:
+        L.append("\n## 9. The pre-registered forward test\n")
+        L.append("The configuration above was selected on NQ after ~60 arms. The test "
+                 "was **pre-registered and committed before it ran** "
+                 "(`research/audit/PREREGISTRATION_FORWARD_TEST.md`): the frozen "
+                 "configuration, the out-of-sample data, and the PASS/FAIL/INCONCLUSIVE "
+                 "criteria were all fixed in advance.\n")
+        L.append("**The out-of-sample instrument is BTCUSDT** (SMT reference ETHUSDT, "
+                 "2023-01 → 2026-11) — a different market, and with a **strictly "
+                 "forward** sub-window (2025-07-26 → 2026-11-21) that is later than any "
+                 "data the selection could have seen.\n")
+        L.append(row(["test", "trades", "net E[R]", "gross E[R]", "95 % CI", "verdict"]))
+        L.append(row(["---"] * 6))
+        for r in fwd:
+            if "er" not in r:
+                continue
+            L.append(row([r["label"].split("  ")[0], r["n"], r["enet"], f"**{r['er']}**",
+                          f"[{r['lo']}, {r['hi']}]", _verdict(r)]))
+        if post:
+            L.append("\n### 9.1 The post-hoc re-run, and why the first one was "
+                     "underpowered\n")
+            L.append("The three inconclusive results had a **mechanical** cause, found by "
+                     "inspecting the candidates rather than by re-tuning anything: the "
+                     "**crypto regime index was never calibrated**. `DvolRegimeIndex` "
+                     "binned the DVOL series with the **VXN's** edges (0 / 18 / 28 / 200), "
+                     "but the DVOL daily close runs **34–90** (p50 = 51) — so every "
+                     "reading fell above 28 and the crypto regime read **81.8 % \"high\", "
+                     "0 % \"normal\"**. The ``vxn_regime_normal`` checklist condition was "
+                     "therefore *never* true on crypto and the checklist could almost "
+                     "never reach 3 (**3.6 %** of the BTCUSDT candidates against NQ's "
+                     "21.1 %).\n")
+            L.append("The bands were calibrated to the DVOL quantiles reproducing the "
+                     "**VXN's own** daily occupancy (35.6 / 48.5 / 15.9 %); the "
+                     "calibrated index now occupies 35.7 / 48.1 / 16.2 %. Re-running the "
+                     "**identical** commands with that defect fixed:\n")
+            L.append(row(["test", "trades", "net E[R]", "gross E[R]", "95 % CI", "verdict"]))
+            L.append(row(["---"] * 6))
+            for r in post:
+                if "er" not in r:
+                    continue
+                L.append(row([r["label"].replace("POST-HOC ", "").split("  ")[0], r["n"],
+                              r["enet"], f"**{r['er']}**", f"[{r['lo']}, {r['hi']}]",
+                              _verdict(r)]))
+        L.append("\n### 9.2 The verdict\n")
+        L.append("1. **The frozen configuration does not generalise.** On BTCUSDT it "
+                 "turns a +0.038 R gross edge into **−0.016 R**. The same was already "
+                 "true on ES. The session and checklist filters are **NQ-specific** — "
+                 "they are not part of the strategy, they are part of the NQ result.\n"
+                 "2. **The rule engine's gross edge does replicate**: on BTCUSDT over "
+                 "the full window +0.0380 R, t = 3.38, CI [0.016, 0.060] — the same "
+                 "magnitude as NQ, on a different market.\n"
+                 "3. **But not in the only strictly-forward window available**: "
+                 "+0.0299 R, t = 1.51, CI **[−0.009, 0.069]** — the interval includes "
+                 "zero, so the pre-registered criterion 2 is **not** met.\n"
+                 "4. **Net expectancy is hopeless on crypto at any of these edges**: the "
+                 "Binance round trip is 0.46 R against a 0.03–0.04 R edge. That is a "
+                 "fact about crypto's fee structure, not about the strategy.\n")
+        L.append("Nothing here re-opens the selection: the configuration was not re-tuned "
+                 "on the basis of the test, and the pre-registered criteria were applied "
+                 "as written.\n")
+
     # ----------------------------------------------------------- the verdict
-    L.append("\n## 9. Verdict against the design doc's phase-1 gate\n")
+    L.append("\n## 10. Verdict against the design doc's phase-1 gate\n")
     L.append(row(["Gate", "Required", "Measured", "Met?"]))
     L.append(row(["---"] * 4))
     L.append(row(["Profit factor", "**> 1.25**", "1.048 rule-only; 1.144 gross / **1.070 net** "
@@ -465,7 +546,13 @@ def main() -> int:
     L.append(row(["Sample", "10 years, 3.66 M bars", "the filtered arm trades 2020-11 → "
                                                       "2025-07 because the SMT is undecidable "
                                                       "before ES starts", "partly"]))
-    L.append("\n### 9.1 The answer to \"entry or payoff?\"\n")
+    L.append(row(["Out of sample", "the configuration must hold on unseen data",
+                  "the pre-registered forward test **FAILS** (§9): on BTCUSDT the frozen "
+                  "configuration is −0.016 R, and the rule's edge does not clear zero in "
+                  "the strictly-forward window", "**No**"]))
+    L.append("\nSo the NQ row above is an **in-sample** result. The only genuinely "
+             "out-of-sample verdict in this report is §9, and it is negative.\n")
+    L.append("\n### 10.1 The answer to \"entry or payoff?\"\n")
     L.append("**The edge is in the entry.** The evidence, in order of size:\n")
     L.append("| lever | effect on gross E[R] | what it is |")
     L.append("|---|---|---|")
@@ -477,21 +564,25 @@ def main() -> int:
              "fine. It was an **entry** problem — the setups outside the NY session and "
              "outside the named conditions are noise, and they cost more in fees than they "
              "earn.\n")
-    L.append("### 9.2 What is still missing\n")
+    L.append("### 10.2 What is still missing\n")
     L.append("**No configuration survives the multiple-testing correction.** The deflated "
              "Sharpe is computed against the ~60 arms tried in this project; the best "
              f"p-value is {min(float(r['dsr_p']) for r in confirm if 'dsr_p' in r):.4f} and the "
              "net-positive arms are all above 0.4. A configuration *selected* as the best of "
              "60 on the same sample it is measured on is a hypothesis, not a result.\n")
-    L.append("The right next step is therefore **not** another filter but a **pre-registered "
-             "confirmation** — and the first such test has already been run and **failed "
-             "on ES** (§8). What survives is narrower and more honest:\n")
+    L.append("The pre-registered confirmation has now been run (§9), and it **failed**: "
+             "the frozen configuration does not generalise to BTCUSDT (gross E[R] −0.016 R "
+             "against the plain arm's +0.038 R), and the rule's own edge does not clear zero "
+             "in the strictly-forward window (CI [−0.009, 0.069]). What survives is narrower "
+             "and more honest:\n")
     L.append("* the **rule engine's gross edge** replicates on BTCUSDT (+0.038 R, t = 3.38), "
              "so it is a property of the rule, not of NQ;\n"
              "* the **filters** (session, checklist) were selected on NQ and do not carry to "
-             "another instrument;\n"
+             "another instrument — they make BTCUSDT *worse* (§9);\n"
              "* **no configuration survives the multiple-testing correction** on the sample it "
-             "was selected on.\n")
+             "was selected on;\n"
+             "* **the edge is not significant in the only strictly-forward window that "
+             "exists** (§9).\n")
     L.append("The vision layer is **built and it works** — mechanically correct, and it "
              "**corrects a wrong audit**: the doc's `IoU > 0.75` gate is reachable (the "
              "median IoU against the gap interval is 0.95). But as a *trading filter* it is "
@@ -500,7 +591,7 @@ def main() -> int:
              "independent signal.\n")
 
     # --------------------------------------------------- what moves the number
-    L.append("\n## 10. What would move the number\n")
+    L.append("\n## 11. What would move the number\n")
     L.append(row(["lever", "measured effect", "status"]))
     L.append(row(["---"] * 3))
     L.append(row(["the doc's NY killzone", "gross E[R] +0.049 R, net E[R] −0.070 → +0.047",
@@ -520,8 +611,15 @@ def main() -> int:
     L.append(row(["the same configuration on another instrument",
                    "BTCUSDT +0.038 R (t = 3.38) — the edge replicates; ES −0.140 R",
                    "**done** — the edge generalises, the filters do not"]))
-    L.append("\nA pre-registered forward test of the frozen configuration is the only thing "
-             "left before this can be called an edge.\n")
+    L.append(row(["the pre-registered forward test (§9)",
+                   "the frozen config FAILS on BTCUSDT; the rule's own edge is +0.030 R "
+                   "with a CI that includes 0 in the strictly-forward window",
+                   "**done and failed**"]))
+    L.append("\nThe pre-registered test has been run and it does not confirm the "
+             "configuration. What is left is **not another filter**: it is NQ data past "
+             "2025-07-25 (which does not exist yet), a materially cheaper cost base, or a "
+             "rule with a larger edge. The gross edge is real on two markets, and it is "
+             "roughly a third of the NQ round trip.\n")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text("\n".join(L), encoding="utf-8")

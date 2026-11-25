@@ -1,0 +1,40 @@
+===== A   frozen config (kz + checklist>=3, known>=4), BTCUSDT 2023-01..2026-11 =====
+checklist filter: score >= 3, known >= 4 -> 198/7087 candidates traded
+PORTFOLIO (1 at a time, drop)    n=192     win%= 30.2  E[R]= -0.0938  E_net= -0.5220  PF= 0.866  t= -0.94  CI95=[-0.289,0.102]
+                                 mean cost=0.4282 R   break-even cost=-0.0938 R   PF_net=0.477   total R=-18.00   max consec losses=12
+                                 mean cost=0.4282 R   break-even cost=-0.0938 R   PF_net=0.477   total R=-18.00   max consec losses=12
+candidates=198  approved=198  trades=192
+Sharpe (per trade) = -0.0679   deflated Sharpe = 0.0007   DSR p-value = 0.9993   trials = 64
+===== A1  frozen config, BTCUSDT 2025-07-26..2026-11 (strictly forward) =====
+checklist filter: score >= 3, known >= 4 -> 76/2332 candidates traded
+PORTFOLIO (1 at a time, drop)    n=75      win%= 34.7  E[R]=  0.0400  E_net= -0.4056  PF= 1.061  t=  0.24  CI95=[-0.285,0.365]
+                                 mean cost=0.4456 R   break-even cost=0.0400 R   PF_net=0.578   total R=3.00   max consec losses=8
+                                 mean cost=0.4456 R   break-even cost=0.0400 R   PF_net=0.578   total R=3.00   max consec losses=8
+candidates=76  approved=76  trades=75
+Sharpe (per trade) = 0.0278   deflated Sharpe = 0.0164   DSR p-value = 0.9836   trials = 64
+===== A2  frozen config, BTCUSDT 2023-01..2025-07-25 =====
+checklist filter: score >= 3, known >= 4 -> 120/4743 candidates traded
+PORTFOLIO (1 at a time, drop)    n=115     win%= 27.8  E[R]= -0.1652  E_net= -0.5844  PF= 0.771  t= -1.31  CI95=[-0.412,0.082]
+                                 mean cost=0.4192 R   break-even cost=-0.1652 R   PF_net=0.425   total R=-19.00   max consec losses=12
+                                 mean cost=0.4192 R   break-even cost=-0.1652 R   PF_net=0.425   total R=-19.00   max consec losses=12
+candidates=120  approved=120  trades=115
+Sharpe (per trade) = -0.1224   deflated Sharpe = 0.0003   DSR p-value = 0.9997   trials = 64
+===== A'  plain reference arm (no killzone, no checklist), BTCUSDT 2023-01..2026-11 =====
+PORTFOLIO (1 at a time, drop)    n=16133   win%= 34.6  E[R]=  0.0380  E_net= -0.4266  PF= 1.058  t=  3.38  CI95=[0.016,0.060]
+                                 mean cost=0.4646 R   break-even cost=0.0380 R   PF_net=0.554   total R=613.00   max consec losses=25
+                                 mean cost=0.4646 R   break-even cost=0.0380 R   PF_net=0.554   total R=613.00   max consec losses=25
+candidates=40651  approved=40651  trades=16134
+Sharpe (per trade) = 0.0266   deflated Sharpe = 0.8463   DSR p-value = 0.1537   trials = 64
+===== A1' plain reference arm, BTCUSDT 2025-07-26..2026-11 =====
+PORTFOLIO (1 at a time, drop)    n=5182    win%= 34.3  E[R]=  0.0299  E_net= -0.4522  PF= 1.046  t=  1.51  CI95=[-0.009,0.069]
+                                 mean cost=0.4822 R   break-even cost=0.0299 R   PF_net=0.535   total R=155.00   max consec losses=17
+                                 mean cost=0.4822 R   break-even cost=0.0299 R   PF_net=0.535   total R=155.00   max consec losses=17
+candidates=13285  approved=13285  trades=5182
+Sharpe (per trade) = 0.0210   deflated Sharpe = 0.1938   DSR p-value = 0.8062   trials = 64
+===== A2' plain reference arm, BTCUSDT 2023-01..2025-07-25 =====
+PORTFOLIO (1 at a time, drop)    n=10926   win%= 34.7  E[R]=  0.0420  E_net= -0.4142  PF= 1.064  t=  3.07  CI95=[0.015,0.069]
+                                 mean cost=0.4562 R   break-even cost=0.0420 R   PF_net=0.564   total R=459.00   max consec losses=25
+                                 mean cost=0.4562 R   break-even cost=0.0420 R   PF_net=0.564   total R=459.00   max consec losses=25
+candidates=27305  approved=27305  trades=10926
+Sharpe (per trade) = 0.0294   deflated Sharpe = 0.7614   DSR p-value = 0.2386   trials = 64
+FORWARD TEST DONE

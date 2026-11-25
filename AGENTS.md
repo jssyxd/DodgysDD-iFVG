@@ -143,7 +143,22 @@ These are measured, not opinions:
     direction in 96.1 %, and the vertical IoU against the **gap interval** has a median of **0.9518**
     with 94.9 % above 0.75. The boxes wrap the **gap**, not the third candle's body. **Never infer
     what a model does — measure it.**
-14. **The detector's *confidence* discriminates on the raw census** (win% 35.2 vs 30.7, E[R] +0.055
+14. **The pre-registered forward test failed.** The frozen configuration does **not**
+    generalise: on BTCUSDT it is −0.016 R gross against the *plain* arm's +0.038 R. The
+    **filters** (session, checklist) are NQ-specific and actively hurt elsewhere (ES too).
+    The **rule's** gross edge does replicate on BTCUSDT (+0.038 R, t = 3.38, CI [0.016,
+    0.060]) — but **not in the only strictly-forward window that exists** (2025-07-26 →
+    2026-11-21, +0.0299 R, t = 1.51, CI [−0.009, 0.069], which includes zero). The NQ
+    dataset stops at 2025-07-25, so there is no cleaner forward test yet. See
+    `research/audit/PREREGISTRATION_FORWARD_TEST.md`.
+15. **The crypto regime index was never calibrated.** `DvolRegimeIndex` binned DVOL with
+    the VXN's edges (0/18/28/200), but DVOL's daily close runs 34–90, so the crypto regime
+    read **81.8 % "high", 0 % "normal"** and the `vxn_regime_normal` checklist condition
+    was never true (the checklist collapsed to 3.6 % of BTC candidates vs NQ's 21.1 %).
+    Now `DVOL_REGIME_BINS = (0.0, 45.6, 60.1, 200.0)`, calibrated to the DVOL quantiles
+    reproducing the VXN's own occupancy. **Any regime index needs its bands calibrated to
+    its own scale.**
+16. **The detector's *confidence* discriminates on the raw census** (win% 35.2 vs 30.7, E[R] +0.055
     vs −0.079, two-proportion z = **+2.26**); the IoU itself is uninformative (corr +0.002 with the
     outcome). **But applied to the portfolio it is redundant with the checklist** — net E[R] falls
     monotonically from +0.047 to +0.020 as the threshold rises, because both filters detect clean

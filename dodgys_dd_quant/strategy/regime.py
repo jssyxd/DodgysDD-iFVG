@@ -36,6 +36,7 @@ from pathlib import Path
 import numpy as np
 
 from dodgys_dd_quant.strategy.constants import (
+    DVOL_REGIME_BINS,
     REGIME_HIGH,
     REGIME_LOW,
     REGIME_NORMAL,
@@ -183,21 +184,24 @@ class DvolRegimeIndex(RegimeIndex):
     """Crypto DVOL, resampled to a daily close and lagged the same way.
 
     The doc names DVOL as the crypto regime index but specifies **no bands**,
-    so the band edges are a *calibration input*: they default to the VXN edges
-    and must be re-calibrated for the DVOL scale before any claim is made about
-    the crypto regimes.
+    so the band edges are a *calibration input*.  They were originally the VXN
+    edges, which are meaningless on the DVOL scale (the DVOL daily close runs
+    34-90) and made the crypto regime read "high" 81.8 % of the time and
+    "normal" never.  The default is now
+    :data:`~dodgys_dd_quant.strategy.constants.DVOL_REGIME_BINS`, calibrated so
+    the DVOL's daily occupancy matches the VXN's own.
     """
 
     days: np.ndarray
     closes: np.ndarray
-    bins: tuple[float, ...] = VXN_REGIME_BINS
+    bins: tuple[float, ...] = DVOL_REGIME_BINS
     name: str = "DVOL"
 
     @classmethod
     def from_parquet(
         cls,
         path: str | Path = DEFAULT_DVOL_PATH,
-        bins: tuple[float, ...] = VXN_REGIME_BINS,
+        bins: tuple[float, ...] = DVOL_REGIME_BINS,
     ) -> "DvolRegimeIndex":
         import pyarrow.parquet as pq
 

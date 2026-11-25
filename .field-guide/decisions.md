@@ -80,3 +80,37 @@ The runtime env stays clean; the layer's pure-python parts (the price→pixel tr
 import without torch so they can be used from the runtime interpreter.
 **There is no GPU on this host** (`nvidia-smi` is absent), so detection runs at **0.45 s per
 candidate** on CPU — fine for a filtered subset, hopeless for the full 430 k census.
+
+## 2026-11-25 — the pre-registered forward test FAILED
+The frozen configuration (pine + killzone + checklist>=3/known>=4 + RR2) was
+pre-registered and committed **before** it ran
+(`research/audit/PREREGISTRATION_FORWARD_TEST.md`).
+
+**On the pre-registered criteria it was INCONCLUSIVE**, because the checklist
+left only 192/75/115 trades (the criterion demands >= 200). The cause was
+mechanical: the **crypto regime index had never been calibrated** —
+`DvolRegimeIndex` binned DVOL with the VXN's edges (0/18/28/200), but DVOL's
+daily close runs 34-90, so the crypto regime read **81.8% "high", 0% "normal"**
+and `vxn_regime_normal` was never true. The checklist collapsed to 3.6% of the
+BTC candidates against NQ's 21.1%. The bands are now calibrated to the DVOL
+quantiles reproducing the VXN's own occupancy (35.6/48.5/15.9%) =>
+`DVOL_REGIME_BINS = (0.0, 45.6, 60.1, 200.0)`.
+
+Re-running the **identical** commands with that fixed gives an adequate sample
+and a clear verdict: **FAIL** on all three sub-periods (884/238/644 trades,
+net E[R] -0.45/-0.37/-0.47).
+
+**What the test establishes:**
+- The **filters do NOT generalise**: on BTCUSDT the frozen config is -0.016 R
+  gross while the *plain* arm is +0.038 R. The session + checklist were
+  NQ-specific and they actively hurt elsewhere. Same on ES.
+- The **rule's gross edge DOES replicate**: BTCUSDT +0.0380 R, t=3.38,
+  CI [0.016, 0.060] over 2023-01..2026-11 — the same magnitude as NQ.
+- **But not in the only strictly-forward window available** (2025-07-26..
+  2026-11-21, after the NQ sample ends): +0.0299 R, t=1.51, CI [-0.009, 0.069]
+  — includes zero. The NQ dataset on Hugging Face stops at 2025-07-25, so a
+  strictly-forward same-instrument test does not exist yet.
+- Net is hopeless on crypto (0.46 R round trip vs a 0.03-0.04 R edge).
+
+**Discipline note:** the configuration was NOT re-tuned after the test, and the
+criteria were applied as written. The DVOL fix is labelled post-hoc.
