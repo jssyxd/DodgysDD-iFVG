@@ -225,7 +225,14 @@ def causal_pivots(
     reference's non-strict fractal comparison (``pine:L622``).
     """
     n = high.shape[0]
-    h_idx, h_price, h_known, l_idx, l_price, l_known = [], [], [], [], [], []
+    # numpy arrays from the start: the short-series branch below skips the
+    # vectorised path, and the constructor calls .astype on every argument
+    h_idx = np.empty(0, dtype=np.int64)
+    h_price = np.empty(0, dtype=np.float64)
+    h_known = np.empty(0, dtype=np.int64)
+    l_idx = np.empty(0, dtype=np.int64)
+    l_price = np.empty(0, dtype=np.float64)
+    l_known = np.empty(0, dtype=np.int64)
 
     if n > left + right:
         # rolling window view -> (n-left-right, 1+left+right)
@@ -534,12 +541,20 @@ def _utc_offsets(ts: np.ndarray, timezone: str) -> np.ndarray:
 
     tz = ZoneInfo(timezone)
     seconds = ts.astype("datetime64[ns]").astype("datetime64[s]").astype(np.int64)
-    # the offset only changes at DST transitions -> derive it per unique day
-    days = seconds // 86_400
-    uniq, inverse = np.unique(days, return_inverse=True)
+    # the offset changes at DST transitions, and a transition happens *within* a
+    # day -- deriving it per day put the whole transition day on midnight's
+    # offset, which was wrong by an hour for the rest of that day.  Per hour is
+    # exact outside the ambiguous transition hour itself.
+    hours = seconds // 3_600
+    uniq, inverse = np.unique(hours, return_inverse=True)
     day_offsets = np.zeros(uniq.shape[0], dtype=np.int64)
-    for i, d in enumerate(uniq):
-        dt = datetime(1970, 1, 1) + timedelta(seconds=int(d) * 86_400)
+    for i, h in enumerate(uniq):
+        dt = datetime(1970, 1, 1) + timedelta(seconds=int(h) * 3_600)
         off = dt.replace(tzinfo=_tz.utc).astimezone(tz).utcoffset() or timedelta(0)
         day_offsets[i] = int(off.total_seconds())
-    return day_offsets[inverse].astype("timedelta64[ns]").astype(np.int64)
+    # ``day_offsets`` holds **seconds**; the caller adds it to a nanosecond
+    # index.  Casting it straight to ``timedelta64[ns]`` read the number as
+    # nanoseconds, so the offset was effectively zero: every ET conversion
+    # silently returned UTC, and the killzone gate and PDH/PDL ran on UTC
+    # whole-days instead of the New-York session.
+    return day_offsets[inverse] * 1_000_000_000

@@ -13,6 +13,7 @@ research/kaggle/
 data/
 artifacts/
 artifacts_pine/
+artifacts_vision/
 research/candidates/
 *.parquet
 *.zip

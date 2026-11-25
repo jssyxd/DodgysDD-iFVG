@@ -582,3 +582,95 @@ def test_the_dvol_bands_are_calibrated_to_the_dvol_scale():
     # and the three labels must all be reachable
     labels = {regime_label(v, DVOL_REGIME_BINS) for v in (40.0, 51.0, 75.0)}
     assert labels == {0, 1, 2}
+
+
+# ---------------------------------------------------------------------------
+# The vision join
+# ---------------------------------------------------------------------------
+
+
+def test_a_joined_vision_signal_fills_the_candidate_and_the_checklist():
+    """A joined (fvg_bar3, confirm_bar) makes the vision condition decidable."""
+    bars = _random_bars(3000, seed=5)
+    base = run_state_machine(bars, PRESETS["pine"])
+    assert base.candidates, "the fixture must produce candidates"
+
+    target = base.candidates[len(base.candidates) // 2]
+    key = (int(target.fvg_newest), int(target.confirm_bar))
+    joined = run_state_machine(
+        bars, PRESETS["pine"], vision={key: (0.96, 0.71)}
+    )
+    hit = next(c for c in joined.candidates
+               if (c.fvg_newest, c.confirm_bar) == key)
+    base_hit = next(c for c in base.candidates
+                    if (c.fvg_newest, c.confirm_bar) == key)
+    assert hit.vision_iou == pytest.approx(0.96)
+    assert hit.vision_confidence == pytest.approx(0.71)
+    assert hit.checklist_flags["vision_iou_pass"] is True
+    # one more condition became decidable: the vision one
+    assert hit.checklist_known == base_hit.checklist_known + 1
+    # every other candidate keeps NaN and never counts the vision condition
+    others = [c for c in joined.candidates
+              if (c.fvg_newest, c.confirm_bar) != key]
+    assert others
+    for c in others:
+        assert math.isnan(c.vision_iou)
+        assert c.checklist_known <= 4
+
+
+def test_the_vision_gate_respects_the_threshold():
+    """IoU below the doc's 0.75 fails the condition even when the bar is seen."""
+    from dodgys_dd_quant.strategy.constants import VISION_IOU_THRESHOLD
+
+    bars = _random_bars(3000, seed=5)
+    base = run_state_machine(bars, PRESETS["pine"])
+    target = base.candidates[0]
+    key = (int(target.fvg_newest), int(target.confirm_bar))
+
+    base_hit = next(c for c in base.candidates
+                    if (c.fvg_newest, c.confirm_bar) == key)
+    low = run_state_machine(bars, PRESETS["pine"],
+                            vision={key: (VISION_IOU_THRESHOLD - 0.01, 0.9)})
+    hit = next(c for c in low.candidates if (c.fvg_newest, c.confirm_bar) == key)
+    assert hit.checklist_flags["vision_iou_pass"] is False
+    assert hit.checklist_known == base_hit.checklist_known + 1
+
+    high = run_state_machine(bars, PRESETS["pine"],
+                             vision={key: (VISION_IOU_THRESHOLD, 0.9)})
+    hit = next(c for c in high.candidates if (c.fvg_newest, c.confirm_bar) == key)
+    assert hit.checklist_flags["vision_iou_pass"] is True
+
+
+def test_without_a_vision_join_the_column_is_nan_in_the_d2_log():
+    """The D2 contract keeps the column; absent signals stay NaN, not 0."""
+    bars = _random_bars(3000, seed=5)
+    log = run_state_machine(bars, PRESETS["pine"])
+    table = log.to_table()
+    col = table["vision_iou"]
+    assert col.shape[0] == len(log.candidates)
+    assert all(math.isnan(v) for v in col)
+
+
+def test_the_local_minutes_helper_actually_applies_the_timezone():
+    """``local_minutes_of_day`` must not silently return UTC.
+
+    The offset used to be cast to ``timedelta64[ns]`` from a value in
+    *seconds*, so it was effectively zero: every "ET" conversion returned
+    UTC.  That made the killzone gate and the PDH/PDL session bookkeeping run
+    on UTC whole-days.  Checked across a DST boundary.
+    """
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    from dodgys_dd_quant.strategy.structure import local_minutes_of_day
+
+    for iso in ("2024-07-15T13:30:00+00:00",   # EDT: 09:30 ET
+                "2024-12-02T14:30:00+00:00",   # EST: 09:30 ET
+                "2015-01-02T20:50:00+00:00"):  # EST: 15:50 ET
+        u = dt.datetime.fromisoformat(iso)
+        et = u.astimezone(ZoneInfo("America/New_York"))
+        ts = np.array([int(u.timestamp() * 1e9)], dtype="int64")
+        got = int(local_minutes_of_day(ts)[0])
+        assert got == et.hour * 60 + et.minute, (
+            f"{iso} should be {et.hour * 60 + et.minute} ET minutes, got {got}"
+        )

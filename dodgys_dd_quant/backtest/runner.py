@@ -185,6 +185,20 @@ def build_parser() -> argparse.ArgumentParser:
              "decidable (4 without the vision layer).",
     )
     p.add_argument(
+        "--extra-features",
+        action="store_true",
+        help="enable the causal extension features when scoring with a model. "
+             "Must match how the model was trained, or the scorer sees a "
+             "different feature vector.",
+    )
+    p.add_argument(
+        "--vision-join",
+        default=None,
+        help="a vision signal parquet (fvg_bar3, confirm_bar, vision_iou, "
+             "vision_confidence). Its values are joined onto the candidates and "
+             "make the checklist's vision condition decidable.",
+    )
+    p.add_argument(
         "--vision-signals",
         default=None,
         help="a parquet of the vision layer's signals (scripts/vision_signals.py), "
@@ -272,8 +286,26 @@ def main(argv: list[str] | None = None) -> int:
         except FileNotFoundError as exc:
             print(f"warning: no reference instrument ({exc})")
 
+    # --- the vision signals, joined before the engine scores the checklist --
+    vision = None
+    if args.vision_join:
+        import pyarrow.parquet as pq
+
+        vtab = pq.read_table(args.vision_join)
+        vision = {}
+        for iou, conf, g3, cb in zip(
+            vtab.column("vision_iou").to_numpy(),
+            vtab.column("vision_confidence").to_numpy(),
+            vtab.column("fvg_bar3").to_numpy(),
+            vtab.column("confirm_bar").to_numpy(),
+        ):
+            if iou == iou:                      # skip NaN
+                vision[(int(g3), int(cb))] = (float(iou), float(conf))
+        print(f"vision join: {len(vision):,} signals from {args.vision_join}")
+
     # --- rule engine ------------------------------------------------------
-    log = run_state_machine(bars, config, regime=regime, reference=reference)
+    log = run_state_machine(bars, config, regime=regime, reference=reference,
+                            vision=vision)
     print(f"candidates: {len(log)}")
 
     out_path = args.candidates_out
@@ -333,11 +365,12 @@ def main(argv: list[str] | None = None) -> int:
 
             from dodgys_dd_quant.ml_pipeline.features import build_features
 
-            cand_df = pd.DataFrame([
-                # `symbol` is a run-level fact, not a per-candidate field
-                {name: getattr(c, name, args.symbol) for name in log.D2_COLUMNS}
-                for c in log.candidates
-            ])
+            # Build the frame from the canonical D2 table, not by hand:
+            # `label` and `r_multiple` are derived from `outcome` inside
+            # `to_table()`, so a hand-built frame loses them (they are not
+            # attributes of `Candidate`) and the ML features that need the
+            # label would silently receive a placeholder.
+            cand_df = pd.DataFrame(log.to_table())
             # The market series, in the shape ml_pipeline.features expects.
             # `Bars.ts` is the bar **open** time; the feature builder merges
             # backwards on "the last bar that closed at or before ts_event", so
@@ -352,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
                     "low": bars.low, "close": bars.close,
                     "volume": bars.volume,
                 })
-            feat_df = build_features(cand_df, bars_df)
+            feat_df = build_features(cand_df, bars_df, extra_features=args.extra_features)
             feat_by_ts = {
                 int(r["ts_event"]): {k: r[k] for k in feat_df.columns if k != "ts_event"}
                 for r in feat_df.to_dict("records")

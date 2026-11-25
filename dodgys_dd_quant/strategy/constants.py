@@ -102,6 +102,12 @@ KILLZONE_NY_PM: Final[tuple[str, str]] = ("13:30", "15:30")
 #: Hard-coded exchange timezone used for every session test (``pine:L79``).
 NY_TZ: Final[str] = "America/New_York"
 
+#: The design doc's vision gate (``iFVG几个模型的讨论.txt`` L279): the 1-D
+#: vertical IoU between the detector's box and the rule engine's FVG price
+#: interval must exceed this.  It **is** reachable — measured median 0.9518 on
+#: real NQ renders (see ``research/analysis/VISION_AUDIT.md``'s CORRECTION).
+VISION_IOU_THRESHOLD: Final[float] = 0.75
+
 #: RTH window used for the PDH/PDL and session-extreme bookkeeping.
 RTH_ET: Final[tuple[str, str]] = ("09:30", "16:00")
 

@@ -77,10 +77,19 @@ OPTIONAL_FEATURES: tuple[str, ...] = ("vision_confidence",)  # [ABSENT] today (D
 
 #: Causal extras, off by default (not part of the frozen L146 list).
 EXTENSION_FEATURES: tuple[str, ...] = (
-    "atr14",             # [DERIVED] Wilder ATR(14) of the last closed bar
-    "risk_atr",          # [DERIVED] risk / atr14  -- normalised stop distance
-    "gap_atr",           # [DERIVED] |fvg_high - fvg_low| / atr14
-    "volume_zscore_60",  # [DERIVED] volume z-score over the last 60 closed bars
+    "atr14",                  # [DERIVED] Wilder ATR(14) of the last closed bar
+    "risk_atr",               # [DERIVED] risk / atr14  -- normalised stop distance
+    "gap_atr",                # [DERIVED] |fvg_high - fvg_low| / atr14
+    "volume_zscore_60",       # [DERIVED] volume z-score over the last 60 closed bars
+    # --- the higher-timeframe / setup-quality block (2026-11-25) ----------
+    "htf_bias_1h",            # [HTF] 1H close-vs-open direction, x side (+1 agrees)
+    "htf_bias_15m",           # [HTF] the same on 15m
+    "dist_to_htf_liquidity",  # [HTF] nearest prior 1H swing on the target side, / atr14
+    "inversion_speed",        # [SETUP] 1 / bars_to_inversion
+    "gap_quality",            # [SETUP] |fvg_high - fvg_low| / risk
+    "session_quality",        # [SETUP] 2 = NY killzone, 1 = London, 0 = other
+    "recent_same_side_wr",    # [STATE] win rate of the last 20 RESOLVED same-side setups
+    "vxn_zscore",             # [STATE] (vxn_known - past-100 mean) / past-100 std
 )
 
 #: The declared universe: what the pipeline *may* use.
@@ -99,6 +108,14 @@ FEATURE_SOURCES: dict[str, str | None] = {
     "risk_atr": None,
     "gap_atr": None,
     "volume_zscore_60": None,
+    "htf_bias_1h": None,
+    "htf_bias_15m": None,
+    "dist_to_htf_liquidity": None,
+    "inversion_speed": None,
+    "gap_quality": None,
+    "session_quality": None,
+    "recent_same_side_wr": None,
+    "vxn_zscore": None,
 }
 
 #: Human readable availability, quoted verbatim in the README and the artefact.
@@ -114,6 +131,14 @@ FEATURE_AVAILABILITY: dict[str, str] = {
     "risk_atr": "[DERIVED] risk / atr14 (extension, off by default)",
     "gap_atr": "[DERIVED] FVG gap width / atr14 (extension, off by default)",
     "volume_zscore_60": "[DERIVED] causal rolling z-score (extension, off by default)",
+    "htf_bias_1h": "[HTF] 15m/1H resampled from the 1m bars, only closed bars used",
+    "htf_bias_15m": "[HTF] as above on 15m",
+    "dist_to_htf_liquidity": "[HTF] prior 1H fractal swings, publication time honoured",
+    "inversion_speed": "[SETUP] 1 / bars_to_inversion",
+    "gap_quality": "[SETUP] gap width / risk (a different normalisation from gap_atr)",
+    "session_quality": "[SETUP] ET killzone membership (NY=2, London=1)",
+    "recent_same_side_wr": "[STATE] strictly causal: only outcomes RESOLVED before the setup",
+    "vxn_zscore": "[STATE] causal, over the previous 100 candidates",
 }
 
 #: Minutes from the same day's 09:30 ET open -- signed.
@@ -424,6 +449,268 @@ def _add_extension_features(candidates: pd.DataFrame, bars: pd.DataFrame) -> pd.
         out["gap_atr"] = width / out["atr14"]
     else:
         out["gap_atr"] = np.nan
+
+    out = _add_htf_features(out, bars)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# higher-timeframe / setup-quality block
+# ---------------------------------------------------------------------------
+
+#: The 1H swing a candidate's liquidity target is read from.  The backward scan
+#: is bounded so the cost stays linear; 200 published swings is ~8 days of 1H.
+HTF_PIVOT_LOOKBACK = 200
+#: The rolling window for ``recent_same_side_wr`` and ``vxn_zscore``.
+STATE_WINDOW = 20
+VXN_WINDOW = 100
+
+
+def _resample_ohlc(b: pd.DataFrame, minutes: int) -> pd.DataFrame:
+    """1-minute bars -> ``minutes`` buckets, published at the bucket's last close.
+
+    A bucket is only usable once its **last** 1-minute bar has closed, so the
+    publication timestamp is that bar's ``ts_event``.  The final bucket of the
+    sample may be partial; it is still causal (its close exists) and is flagged
+    by nothing more than being the last row.
+    """
+    step = minutes * 60 * 1_000_000_000
+    bucket = (b["ts_event"].to_numpy(dtype="int64") // step)
+    frame = pd.DataFrame({
+        "bucket": bucket,
+        "ts_event": b["ts_event"].to_numpy(dtype="int64"),
+        "open": b["open"].to_numpy(dtype="float64"),
+        "high": b["high"].to_numpy(dtype="float64"),
+        "low": b["low"].to_numpy(dtype="float64"),
+        "close": b["close"].to_numpy(dtype="float64"),
+    })
+    g = frame.groupby("bucket", sort=True)
+    out = pd.DataFrame({
+        "ts_event": g["ts_event"].max(),        # the bucket's last 1m close time
+        "open": g["open"].first(),
+        "high": g["high"].max(),
+        "low": g["low"].min(),
+        "close": g["close"].last(),
+    }).sort_values("ts_event", kind="stable")
+    return out
+
+
+def _merge_backward(left_ts: np.ndarray, frame: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """``merge_asof`` backwards on ``ts_event`` -- a future bar can never leak in."""
+    left = pd.DataFrame({"ts_event": left_ts})
+    left["_row"] = np.arange(len(left))
+    merged = pd.merge_asof(
+        left.sort_values("ts_event", kind="stable"),
+        frame.sort_values("ts_event", kind="stable")[["ts_event", *cols]],
+        on="ts_event",
+        direction="backward",
+    ).sort_values("_row", kind="stable")
+    return merged
+
+
+def _resolution_bars(
+    candidates: pd.DataFrame, b: pd.DataFrame, cap: int = 20_000
+) -> np.ndarray:
+    """The bar at which each candidate's trade resolved (-1 if it never did).
+
+    Re-derived from the bars with the **first-touch** rule the engine uses (a
+    tie on one bar counts as the stop).  This is what makes
+    ``recent_same_side_wr`` provably causal: a past candidate's outcome may only
+    be used once its own resolution bar is strictly before the current setup.
+
+    A fixed embargo is not an option -- the measured maximum holding time on the
+    NQ sample is **15,039 bars**, so a constant would either leak or discard most
+    of the sample.
+
+    The scan is chunked and capped at ``cap`` bars: the median hold is 9 bars, so
+    the common case touches one 256-bar chunk.  A trade that would hold longer
+    than ``cap`` is reported as unresolved, which only *removes* it from the
+    feature's history -- it cannot leak.
+    """
+    low = b["low"].to_numpy(dtype="float64")
+    high = b["high"].to_numpy(dtype="float64")
+    nb = len(low)
+    stop = candidates["stop_price"].to_numpy(dtype="float64")
+    target = candidates["target_price"].to_numpy(dtype="float64")
+    side = candidates["side"].to_numpy(dtype="int64")
+    entry_bar = candidates["confirm_bar"].to_numpy(dtype="int64") + 1
+    out = np.full(len(candidates), -1, dtype="int64")
+    chunk = 256
+
+    def first_true(k: int, end: int, s: float, t: float, sd: int, which: int) -> int:
+        """First bar in [k, end) where the stop (which=0) or target (1) is touched."""
+        while k < end:
+            e = min(end, k + chunk)
+            if which == 0:
+                m = (low[k:e] <= s) if sd > 0 else (high[k:e] >= s)
+            else:
+                m = (high[k:e] >= t) if sd > 0 else (low[k:e] <= t)
+            if m.any():
+                return k + int(m.argmax())
+            k = e
+        return -1
+
+    for i in range(len(candidates)):
+        j = int(entry_bar[i])
+        if j >= nb:
+            continue
+        end = min(nb, j + cap)
+        ia = first_true(j, end, stop[i], target[i], int(side[i]), 0)
+        ic = first_true(j, end, stop[i], target[i], int(side[i]), 1)
+        if ia < 0 and ic < 0:
+            continue
+        out[i] = ia if (ic < 0 or (ia >= 0 and ia <= ic)) else ic
+    return out
+
+
+def _add_htf_features(candidates: pd.DataFrame, bars: pd.DataFrame) -> pd.DataFrame:
+    """Attach the higher-timeframe and setup-quality features.
+
+    Every value comes from information that exists at or before ``ts_event``:
+    a resampled bucket is used only from its last underlying 1-minute close
+    onwards, a 1H swing only after its fractal is published, and a past
+    candidate's outcome only after that trade has actually resolved.
+    """
+    from dodgys_dd_quant.strategy.constants import (
+        KILLZONE_LONDON_ET, KILLZONE_NY_AM, KILLZONE_NY_PM,
+    )
+    from dodgys_dd_quant.strategy.structure import causal_pivots
+
+    b = _normalise_bars(bars)
+    out = candidates.copy()
+    ts = out["ts_event"].to_numpy(dtype="int64")
+    side = out["side"].to_numpy(dtype="int64") if "side" in out.columns else np.ones(len(out))
+
+    # --- htf_bias_1h / htf_bias_15m -------------------------------------
+    for minutes, name in ((60, "htf_bias_1h"), (15, "htf_bias_15m")):
+        r = _resample_ohlc(b, minutes)
+        r["bias"] = np.sign(r["close"].to_numpy() - r["open"].to_numpy())
+        col = _merge_backward(ts, r, ["bias"])["bias"].to_numpy(dtype="float64")
+        out[name] = col * side          # +1 => the HTF bar agrees with the trade
+
+    # --- dist_to_htf_liquidity ------------------------------------------
+    h1 = _resample_ohlc(b, 60)
+    piv = causal_pivots(
+        h1["high"].to_numpy(dtype="float64"), h1["low"].to_numpy(dtype="float64")
+    )
+    h1_ts = h1["ts_event"].to_numpy(dtype="int64")
+    hi_known = h1_ts[piv.high_known] if len(piv.high_known) else np.empty(0, "int64")
+    hi_price = h1["high"].to_numpy(dtype="float64")[piv.high_idx] if len(piv.high_idx) else np.empty(0)
+    lo_known = h1_ts[piv.low_known] if len(piv.low_known) else np.empty(0, "int64")
+    lo_price = h1["low"].to_numpy(dtype="float64")[piv.low_idx] if len(piv.low_idx) else np.empty(0)
+    entry = out["entry_price"].to_numpy(dtype="float64") if "entry_price" in out.columns \
+        else np.full(len(out), np.nan)
+    atr = out["atr14"].to_numpy(dtype="float64") if "atr14" in out.columns \
+        else np.full(len(out), np.nan)
+    dist = np.full(len(out), np.nan)
+    for i in range(len(out)):
+        t = ts[i]
+        # the pivots published before this setup
+        if side[i] > 0:
+            n = int(np.searchsorted(hi_known, t, side="left"))
+            if n == 0:
+                continue
+            window = hi_price[max(0, n - HTF_PIVOT_LOOKBACK):n]
+            cand_prices = window[window > entry[i]]     # the liquidity above
+            if cand_prices.size:
+                dist[i] = (cand_prices.min() - entry[i]) / atr[i]
+        else:
+            n = int(np.searchsorted(lo_known, t, side="left"))
+            if n == 0:
+                continue
+            window = lo_price[max(0, n - HTF_PIVOT_LOOKBACK):n]
+            cand_prices = window[window < entry[i]]     # the liquidity below
+            if cand_prices.size:
+                dist[i] = (entry[i] - cand_prices.max()) / atr[i]
+    out["dist_to_htf_liquidity"] = dist
+
+    # --- setup quality ---------------------------------------------------
+    bti = out["bars_to_inversion"].to_numpy(dtype="float64") if "bars_to_inversion" in out.columns \
+        else np.full(len(out), np.nan)
+    out["inversion_speed"] = np.divide(1.0, bti, out=np.full_like(bti, np.nan), where=bti > 0)
+
+    width = (out["fvg_high"].to_numpy(dtype="float64")
+             - out["fvg_low"].to_numpy(dtype="float64")).__abs__() \
+        if {"fvg_low", "fvg_high"} <= set(out.columns) else np.full(len(out), np.nan)
+    risk = out["risk"].to_numpy(dtype="float64") if "risk" in out.columns \
+        else np.full(len(out), np.nan)
+    out["gap_quality"] = np.divide(width, risk, out=np.full_like(width, np.nan), where=risk > 0)
+
+    # --- session_quality --------------------------------------------------
+    et_minutes = _et_minute_of_day(ts)
+    def _in(window: tuple[str, str]) -> np.ndarray:
+        lo_h, lo_m = (int(x) for x in window[0].split(":"))
+        hi_h, hi_m = (int(x) for x in window[1].split(":"))
+        return (et_minutes >= lo_h * 60 + lo_m) & (et_minutes <= hi_h * 60 + hi_m)
+    ny = _in(KILLZONE_NY_AM) | _in(KILLZONE_NY_PM)
+    lon = _in(KILLZONE_LONDON_ET)
+    out["session_quality"] = np.where(ny, 2, np.where(lon, 1, 0)).astype("float64")
+
+    # --- recent_same_side_wr (strictly causal) ---------------------------
+    out["recent_same_side_wr"] = _recent_same_side_wr(out, b)
+
+    # --- vxn_zscore -------------------------------------------------------
+    if "vxn_known" in out.columns:
+        v = out["vxn_known"].astype("float64")
+        past = v.shift(1)                      # strictly past rows only
+        mean = past.rolling(VXN_WINDOW, min_periods=20).mean()
+        std = past.rolling(VXN_WINDOW, min_periods=20).std(ddof=0)
+        out["vxn_zscore"] = np.divide(v - mean, std, out=np.full(len(v), np.nan),
+                                      where=(std.to_numpy() > 0))
+    else:
+        out["vxn_zscore"] = np.nan
+    return out
+
+
+def _et_minute_of_day(ts: np.ndarray) -> np.ndarray:
+    """The Eastern-Time minute of the day for each ns timestamp."""
+    stamp = pd.to_datetime(ts.astype("int64"), utc=True).tz_convert("America/New_York")
+    return (stamp.hour * 60 + stamp.minute).to_numpy(dtype="int64")
+
+
+def _recent_same_side_wr(candidates: pd.DataFrame, b: pd.DataFrame) -> np.ndarray:
+    """Win rate of the recent same-side setups whose outcome is **already known**.
+
+    Eligibility is ``exit_bar < confirm_bar`` of the current setup -- that past
+    trade has actually resolved, so reading its label is causal.  Among the
+    eligible ones the most recently **resolved** ``STATE_WINDOW`` are averaged.
+
+    A fixed embargo cannot do this: the measured maximum holding time on the NQ
+    sample is 15,039 bars, so any constant would either leak or throw away most
+    of the sample.
+    """
+    import heapq
+
+    if "label" not in candidates.columns or "confirm_bar" not in candidates.columns:
+        return np.full(len(candidates), np.nan)
+    if not pd.api.types.is_numeric_dtype(candidates["label"]):
+        # a caller that did not carry the outcome (the D2 table does) cannot
+        # have this feature -- return the "unknown" value rather than guessing
+        return np.full(len(candidates), np.nan)
+    exit_bar = _resolution_bars(candidates, b)
+    cb = candidates["confirm_bar"].to_numpy(dtype="int64")
+    side = candidates["side"].to_numpy(dtype="int64")
+    label = candidates["label"].to_numpy(dtype="int64")
+    out = np.full(len(candidates), np.nan, dtype="float64")
+    heaps: dict[int, list[tuple[int, int]]] = {1: [], -1: []}
+    recent: dict[int, list[int]] = {1: [], -1: []}
+    cursor = 0
+    for i in range(len(candidates)):
+        while cursor < i:                    # every earlier setup is now "past"
+            ps = int(side[cursor])
+            if exit_bar[cursor] >= 0:
+                heapq.heappush(heaps[ps], (int(exit_bar[cursor]), int(label[cursor])))
+            cursor += 1
+        s_i = int(side[i])
+        while heaps[s_i] and heaps[s_i][0][0] < cb[i]:
+            _, lab = heapq.heappop(heaps[s_i])
+            recent[s_i].append(lab)
+            if len(recent[s_i]) > STATE_WINDOW:
+                recent[s_i].pop(0)
+        if recent[s_i]:
+            vals = [v for v in recent[s_i] if v >= 0]
+            if vals:
+                out[i] = float(np.mean(vals))
     return out
 
 

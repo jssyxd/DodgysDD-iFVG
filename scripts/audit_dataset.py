@@ -334,6 +334,41 @@ def check_execution(table, rr: float) -> list[str]:
     return out
 
 
+def check_minutes_from_us_open(table) -> list[str]:
+    """The D2 ``minutes_from_us_open`` must be ET minutes from 09:30, not UTC.
+
+    This is the check that catches a timezone helper that silently returns UTC:
+    the value would be wrong by the UTC/ET offset (4h in summer, 5h in winter).
+    """
+    if "minutes_from_us_open" not in table.column_names:
+        return []
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    ts = table.column("ts_event").to_numpy()
+    got = table.column("minutes_from_us_open").to_numpy()
+    idx = np.arange(0, len(ts), max(1, len(ts) // 2000))
+    tz = ZoneInfo("America/New_York")
+    bad = 0
+    off = []
+    for i in idx:
+        u = dt.datetime.fromtimestamp(int(ts[i]) / 1e9, dt.timezone.utc)
+        e = u.astimezone(tz)
+        want = e.hour * 60 + e.minute - (9 * 60 + 30)
+        off.append(int(got[i]) - want)
+    off = np.array(off)
+    bad = int(np.sum(off != 0))
+    out = ["", "### 8. `minutes_from_us_open` vs Eastern time", ""]
+    out.append(f"* sampled {len(idx):,} rows; mismatches: **{bad:,}**")
+    if bad:
+        out.append(f"  the offset is {int(np.median(off))} minutes -> the helper is "
+                   f"not applying the timezone (a UTC/ET bug)")
+    else:
+        out.append("  every sampled row is the ET minute from 09:30 -- the timezone "
+                   "helper is correct")
+    return out
+
+
 def check_timestamp_semantics(table, bars) -> list[str]:
     out = ["", "### 7. Timestamp semantics", ""]
     if bars is not None:
@@ -417,6 +452,7 @@ def audit(path: Path, bars: dict | None, rr: float):
         out += check_rule_fidelity(table)
         out += check_execution(table, rr)
         out += check_timestamp_semantics(table, bars)
+        out += check_minutes_from_us_open(table)
     else:
         out += ["", "_(not a candidate log: schema / head / stats only)_"]
     return out, f

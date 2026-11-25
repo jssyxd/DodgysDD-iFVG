@@ -114,3 +114,45 @@ net E[R] -0.45/-0.37/-0.47).
 
 **Discipline note:** the configuration was NOT re-tuned after the test, and the
 criteria were applied as written. The DVOL fix is labelled post-hoc.
+
+## 2026-11-25 — the timezone helper silently returned UTC (a real bug, now fixed)
+`dodgys_dd_quant/strategy/structure.py`'s `_utc_offsets` built the offset in
+**seconds** and then cast it with `.astype("timedelta64[ns]")`, which reads the
+integer as *nanoseconds*: the offset was effectively zero, so
+`local_minutes_of_day` returned **UTC** minutes, not Eastern.
+
+Consequences: the killzone gate and `session_extremes` (PDH/PDL, session
+highs/lows) ran on **UTC** windows, and the D2 `minutes_from_us_open` column
+was wrong by 4–5 hours in every log.
+
+Fixed with `day_offsets[inverse] * 1_000_000_000`, verified across a DST
+boundary. **Re-measured:** the killzone arm's gross E[R] went
++0.0637 → **+0.0697** (t 3.72 → 3.98) and net −0.0198 → **+0.0116** (now
+positive). The ungated arm is byte-identical (51,391 candidates, +0.0317), as
+it must be — the gate is not applied there.
+
+`test_the_local_minutes_helper_actually_applies_the_timezone` pins it.
+
+## 2026-11-25 — the runner's hand-built candidate frame lost `label`
+`runner.py` built the ML feature frame as
+`{name: getattr(c, name, args.symbol) for name in log.D2_COLUMNS}`. But
+`label` and `r_multiple` are **derived from `outcome` inside `to_table()`** and
+are not attributes of `Candidate`, so the fallback filled them with the
+*string* `"NQ"` — any feature touching the label crashed with
+`int('NQ')`. Now the runner uses `pd.DataFrame(log.to_table())`, the same
+source the trainer reads.
+
+## 2026-11-25 — a fixed embargo cannot make a "recent win-rate" feature causal
+The maximum holding time on NQ 1-minute is **15,039 bars** (p99.9 = 788), so any
+constant embargo either leaks or discards most of the sample.
+`recent_same_side_wr` therefore gates each past candidate on its **own
+resolution bar** (`exit_bar < current confirm_bar`), re-derived from the bars
+with the engine's first-touch rule (chunked, capped at 20,000 bars; a longer
+trade is treated as unresolved, which only *removes* it from the history).
+
+## 2026-11-25 — the herdr worker CLIs are rate-limited
+`herd-dispatch assign --kind codex` fails: `codex` is not on PATH. `--kind pi`
+starts, but both workers died within ~30 s with
+`429 … 已达到 Token Plan 用量上限` (the `minimax-cn` plan is exhausted). The
+worktree was left clean, so nothing was lost. When the quota is gone, the
+captain implements directly.

@@ -51,6 +51,7 @@ from dodgys_dd_quant.strategy.constants import (
     INVERSION_MAX_BARS,
     INVERSION_MIN_BARS,
     US_OPEN_MINUTES,
+    VISION_IOU_THRESHOLD,
     KILLZONE_NY_AM,
     KILLZONE_NY_PM,
     LIQUIDITY_TARGET_MIN_R,
@@ -301,6 +302,10 @@ class Candidate:
     vxn_regime: int = -1
     origin_bar: int = -1
     origin_price: float = float("nan")
+    #: The vision layer's 1-D vertical IoU against the gap interval, and the
+    #: detector's confidence.  ``NaN`` means *the detector never saw this bar*.
+    vision_iou: float = float("nan")
+    vision_confidence: float = float("nan")
     outcome: str = "open"      # "stop" | "target" | "open" | "expired" | "discarded"
     r_multiple: float = float("nan")
     exit_bar: int = -1
@@ -404,8 +409,9 @@ class CandidateLog:
             "vxn_regime": np.array([c.vxn_regime for c in cands], dtype=np.int8),
             # The vision layer does not exist (D12); the columns stay in the
             # schema and are filled with NaN.
-            "vision_iou": np.full(n, np.nan, dtype=np.float64),
-            "vision_confidence": np.full(n, np.nan, dtype=np.float64),
+            "vision_iou": np.array([c.vision_iou for c in cands], dtype=np.float64),
+            "vision_confidence": np.array([c.vision_confidence for c in cands],
+                                          dtype=np.float64),
             "label": label,
             "r_multiple": np.array([c.r_multiple for c in cands], dtype=np.float64),
         }
@@ -433,6 +439,7 @@ def run_state_machine(
     *,
     regime=None,
     reference: Bars | None = None,
+    vision: dict[tuple[int, int], tuple[float, float]] | None = None,
 ) -> CandidateLog:
     """Run the rule engine over ``bars`` and return the D2 candidate log.
 
@@ -481,6 +488,7 @@ def run_state_machine(
     _attach_checklist(candidates, bars, pivots, extremes, atr, config)
     _attach_smt(candidates, bars, reference, config)
     _attach_regime(candidates, bars, regime)
+    _attach_vision(candidates, vision)
     _score_checklist(candidates)
     _resolve_outcomes(candidates, bars, config)
     return CandidateLog(candidates, config.symbol, config.timeframe)
@@ -1090,6 +1098,30 @@ def _attach_checklist(
         cand.checklist_score = float(sum(1 for v in flags.values() if v))
 
 
+def _attach_vision(
+    candidates: list[Candidate],
+    signals: dict[tuple[int, int], tuple[float, float]] | None,
+) -> None:
+    """Join the vision layer's result onto each candidate.
+
+    ``signals`` maps ``(fvg_bar3, confirm_bar)`` to ``(iou, confidence)`` —
+    the key the vision layer writes (``scripts/vision_signals.py``), which is
+    the gap and the bar that confirmed it.  A candidate whose key is absent
+    keeps ``vision_iou = NaN``: that means *the detector never saw this bar*
+    (the vision layer was run over a sample), which must not be confused with
+    *it saw it and scored 0*.
+    """
+    if not signals:
+        return
+    for cand in candidates:
+        hit = signals.get((int(cand.fvg_newest), int(cand.confirm_bar)))
+        if hit is None:
+            continue
+        iou, conf = hit
+        cand.vision_iou = float(iou)
+        cand.vision_confidence = float(conf)
+
+
 def _score_checklist(candidates: list[Candidate]) -> None:
     """Score the checklist **after** every condition has been attached.
 
@@ -1106,11 +1138,15 @@ def _score_checklist(candidates: list[Candidate]) -> None:
     """
     for cand in candidates:
         flags = cand.checklist_flags
+        vision_known = bool(np.isfinite(cand.vision_iou))
+        if vision_known:
+            flags["vision_iou_pass"] = bool(cand.vision_iou >= VISION_IOU_THRESHOLD)
         decidable = {
             "smt_divergence": cand.smt_divergence >= 0,
             "no_obstruction": True,
             "liquidity_target_2r": True,
-            "vision_iou_pass": False,        # the layer does not exist (D12)
+            # decidable only when the vision layer actually scored this bar
+            "vision_iou_pass": vision_known,
             "vxn_regime_normal": cand.vxn_regime >= 0,
         }
         known = [name for name, ok in decidable.items() if ok]
