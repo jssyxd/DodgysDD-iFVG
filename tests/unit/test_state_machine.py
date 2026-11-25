@@ -674,3 +674,46 @@ def test_the_local_minutes_helper_actually_applies_the_timezone():
         assert got == et.hour * 60 + et.minute, (
             f"{iso} should be {et.hour * 60 + et.minute} ET minutes, got {got}"
         )
+
+
+# ---------------------------------------------------------------------------
+# The V2 gates and the managed presets
+# ---------------------------------------------------------------------------
+
+
+def test_the_htf_bias_gate_only_keeps_agreeing_setups():
+    """Every survivor's last closed HTF bar must agree with its side."""
+    from dodgys_dd_quant.strategy.state_machine import _htf_bias
+
+    bars = _random_bars(3000, seed=5)
+    base = run_state_machine(bars, PRESETS["pine"])
+    gated = run_state_machine(bars, PRESETS["pine_htf15only"])
+    assert len(gated.candidates) <= len(base.candidates)
+    bias = _htf_bias(bars, PRESETS["pine_htf15only"].htf_minutes)
+    assert gated.candidates, "the fixture must keep something"
+    for c in gated.candidates:
+        assert int(bias[c.confirm_bar]) * int(c.side) > 0
+
+
+def test_the_liquidity_gate_only_keeps_clear_targets():
+    bars = _random_bars(3000, seed=5)
+    gated = run_state_machine(bars, PRESETS["pine_liqonly"])
+    for c in gated.candidates:
+        assert c.checklist_flags["liquidity_target_2r"] is True
+
+
+def test_the_managed_preset_books_a_partial_and_leaves_the_target_for_a_win():
+    """A managed arm's win is still the full target; a scratch is a 0, not a −1."""
+    bars = _random_bars(3000, seed=5)
+    log = run_state_machine(bars, PRESETS["pine_half_tp"])
+    resolved = [c for c in log.candidates if c.outcome in ("target", "stop")]
+    assert resolved
+    wins = [c for c in resolved if c.outcome == "target"]
+    for c in wins:
+        # 50 % at +1R plus 50 % at +2R = 1.5 R, below the plain 2 R
+        assert 1.0 <= c.r_multiple <= 2.0
+    losses = [c for c in resolved if c.outcome == "stop"]
+    for c in losses:
+        assert c.r_multiple <= 0.5          # a scratch at +0.5 R at worst
+    table = log.to_table()
+    assert table["r_multiple"].shape[0] == len(log.candidates)

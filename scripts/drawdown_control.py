@@ -211,13 +211,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default="research/experiments/DRAWDOWN_CONTROL.md")
     ap.add_argument("--dd-threshold", type=float, default=5.0)
     ap.add_argument("--streak", type=int, default=3)
+    ap.add_argument("--preset", default="pine", choices=["pine", "pine_half_tp",
+                                                         "pine_half_tp_be"],
+                    help="the rule/management preset to replay")
+    ap.add_argument("--cost-profile", default=None,
+                    help="charge the round trip in R (e.g. 'nq'); None = gross")
+    ap.add_argument("--slippage-ticks", type=int, default=1)
     ap.add_argument("--lo", type=float, default=0.25)
     ap.add_argument("--hi", type=float, default=2.5)
     args = ap.parse_args(argv)
 
     from dodgys_dd_quant.backtest.runner import load_bars
     raw = load_bars(args.bars, symbol="NQ", timeframe="1m")
-    cfg = replace(PRESETS["pine"], symbol="NQ", timeframe="1m",
+    cfg = replace(PRESETS[args.preset], symbol="NQ", timeframe="1m",
                   killzone_gate=True).with_doc_window()
     log = run_state_machine(raw, cfg, regime=_regime(args.bars))
     traded = simulate_portfolio(log.candidates, len(raw))
@@ -229,6 +235,16 @@ def main(argv: list[str] | None = None) -> int:
 
     ts = np.array([c.ts_event for c in traded], dtype="int64")
     r = np.array([c.r_multiple for c in traded], dtype="float64")
+    price = np.array([c.entry_price for c in traded], dtype="float64")
+    cost_r = np.zeros(len(traded), dtype="float64")
+    if args.cost_profile:
+        from dodgys_dd_quant.backtest.cost_model import cost_in_r, get_profile
+        prof = get_profile(args.cost_profile)
+        cost_r = np.array([cost_in_r(prof, float(pr), float(cd.risk), args.slippage_ticks)
+                           for pr, cd in zip(price, traded)], dtype="float64")
+        r = r - cost_r
+        print(f"cost profile '{args.cost_profile}': mean {np.nanmean(cost_r):.4f} R/trade "
+              f"-> the numbers below are NET")
     atr = np.array([f_by_ts.get(int(t), {}).get("atr14", np.nan) for t in ts], dtype="float64")
     regime = np.array([f_by_ts.get(int(t), {}).get("vxn_regime", -1) for t in ts], dtype=np.int64)
     risk = np.array([c.risk for c in traded], dtype="float64")
@@ -281,7 +297,9 @@ def main(argv: list[str] | None = None) -> int:
 
     base_s = _stats(r)
     size_rows = [(n, _stats(sz * r), float(np.mean(sz))) for n, sz in sizing.items()]
-    mg_rows = [(n, _stats(v), 1.0) for n, v in management.items()]
+    # the managed R is simulated from the bars, so it must be charged the same
+    # round trip: comparing a gross managed arm with a net baseline is meaningless
+    mg_rows = [(n, _stats(v - cost_r[ok]), 1.0) for n, v in management.items()]
 
     L = ["# Drawdown control — the NQ killzone arm\n",
          f"Portfolio: **one position at a time, drop** (the engine's own "

@@ -133,6 +133,15 @@ class RuleConfig:
 
     # --- risk -------------------------------------------------------------
     rr: float = DEFAULT_RR
+    #: Exit management.  ``"none"`` is the reference behaviour (stop or the
+    #: full target).  ``"half_tp"`` books ``partial_tp_frac`` at
+    #: ``partial_tp_r`` R and lets the remainder run to the target **or the
+    #: original stop** -- the design doc's partial take-profit action.
+    #: ``"half_tp_be"`` is the same but moves the remainder's stop to the entry
+    #: (the doc's break-even trigger).
+    management: str = "none"
+    partial_tp_r: float = 1.0
+    partial_tp_frac: float = 0.5
     #: The stop is moved away from the entry by this factor.  A trade costs a
     #: fixed number of dollars, so a wider stop lowers the cost **in R** — the
     #: only lever that touches the cost ratio directly.
@@ -154,6 +163,14 @@ class RuleConfig:
     #: ``True``  = the reference's leg tracker: at most one live candidate per
     #: direction inside a swing leg.
     leg_tracker: bool = False
+    #: The V2 higher-timeframe gate: keep a setup only when the last **closed**
+    #: bar of ``htf_minutes`` agrees with the trade's direction.  The doc's
+    #: "structure and bias" layer (4H / 1H / 15m) is otherwise unused: the 1m
+    #: engine sees no higher timeframe at all.
+    require_htf_bias: bool = False
+    htf_minutes: int = 60
+    #: Keep a setup only when the checklist's ``liquidity_target_2r`` holds.
+    require_liquidity_target: bool = False
 
     # --- portfolio --------------------------------------------------------
     #: ``"drop"`` = a signal blocked by an open position is discarded (L2's
@@ -234,6 +251,74 @@ PRESETS: dict[str, RuleConfig] = {
         portfolio_mode="drop",
         require_sweep=True,
         killzone_gate=True,
+    ),
+    # V2: the higher-timeframe bias gate (the doc's 4H/1H/15m structure layer)
+    # and the "clear >=2R liquidity target" precondition.
+    "pine_htf": RuleConfig(
+        min_gap_atr_mult=None,
+        stop_window="confirm",
+        entry_fill="next_open",
+        portfolio_mode="drop",
+        require_sweep=False,
+        leg_tracker=True,
+        require_be_intact=True,
+        require_htf_bias=True,
+        htf_minutes=60,
+        require_liquidity_target=True,
+    ),
+    "pine_htf15": RuleConfig(
+        min_gap_atr_mult=None,
+        stop_window="confirm",
+        entry_fill="next_open",
+        portfolio_mode="drop",
+        require_sweep=False,
+        leg_tracker=True,
+        require_be_intact=True,
+        require_htf_bias=True,
+        htf_minutes=15,
+        require_liquidity_target=True,
+    ),
+    "pine_htf15only": RuleConfig(
+        min_gap_atr_mult=None, stop_window="confirm", entry_fill="next_open",
+        portfolio_mode="drop", require_sweep=False, leg_tracker=True,
+        require_be_intact=True, require_htf_bias=True, htf_minutes=15,
+        require_liquidity_target=False,
+    ),
+    # Ablations of the V2 gates: each keeps one so the cost of each is visible.
+    "pine_htfonly": RuleConfig(
+        min_gap_atr_mult=None, stop_window="confirm", entry_fill="next_open",
+        portfolio_mode="drop", require_sweep=False, leg_tracker=True,
+        require_be_intact=True, require_htf_bias=True, htf_minutes=60,
+        require_liquidity_target=False,
+    ),
+    "pine_liqonly": RuleConfig(
+        min_gap_atr_mult=None, stop_window="confirm", entry_fill="next_open",
+        portfolio_mode="drop", require_sweep=False, leg_tracker=True,
+        require_be_intact=True, require_htf_bias=False,
+        require_liquidity_target=True,
+    ),
+    # The partial take-profit arms (the doc's RL action space).  `half_tp`
+    # books half at +1R and leaves the remainder's stop where it was; `half_tp_be`
+    # also moves that stop to the entry (the doc's break-even trigger).
+    "pine_half_tp": RuleConfig(
+        min_gap_atr_mult=None,
+        stop_window="confirm",
+        entry_fill="next_open",
+        portfolio_mode="drop",
+        require_sweep=False,
+        leg_tracker=True,
+        require_be_intact=True,
+        management="half_tp",
+    ),
+    "pine_half_tp_be": RuleConfig(
+        min_gap_atr_mult=None,
+        stop_window="confirm",
+        entry_fill="next_open",
+        portfolio_mode="drop",
+        require_sweep=False,
+        leg_tracker=True,
+        require_be_intact=True,
+        management="half_tp_be",
     ),
     # Ablations of the reference-faithful arm: each keeps one of its two
     # reference features so the contribution of each can be measured.
@@ -489,6 +574,7 @@ def run_state_machine(
     _attach_smt(candidates, bars, reference, config)
     _attach_regime(candidates, bars, regime)
     _attach_vision(candidates, vision)
+    candidates = _filter_candidates(candidates, bars, config)
     _score_checklist(candidates)
     _resolve_outcomes(candidates, bars, config)
     return CandidateLog(candidates, config.symbol, config.timeframe)
@@ -1122,6 +1208,56 @@ def _attach_vision(
         cand.vision_confidence = float(conf)
 
 
+def _htf_bias(bars: Bars, minutes: int) -> np.ndarray:
+    """Sign of the last **closed** ``minutes`` bucket at every bar's close.
+
+    A bucket is only complete once its last 1-minute bar has closed, so a
+    bucket that is still open at bar ``i`` is not used: the bias at ``i`` comes
+    from the bucket before it.  Causal by construction.
+    """
+    step = int(minutes) * 60 * 1_000_000_000
+    close_ts = bars.close_ts()
+    bucket = (close_ts // step).astype("int64")
+    uniq, inv = np.unique(bucket, return_inverse=True)
+    # the open of each bucket is the first bar's open, the close the last bar's close
+    first = np.zeros(len(uniq), dtype=np.int64)
+    np.minimum.at(first, inv, np.arange(len(bucket)))
+    last = np.zeros(len(uniq), dtype=np.int64)
+    np.maximum.at(last, inv, np.arange(len(bucket)))
+    bucket_close = bars.close[last]
+    bucket_open = bars.open[first]
+    sign = np.sign(bucket_close - bucket_open)          # +1 up, -1 down, 0 flat
+    sign[sign == 0] = 0
+    # a bucket still open at bar i is incomplete: use the previous one
+    incomplete = (close_ts // step) == (close_ts // step)
+    # the bucket ends at (bucket+1)*step; if close_ts < that, it is still open
+    ends_at = (bucket + 1) * step
+    is_open = close_ts < ends_at
+    idx = inv - is_open.astype(np.int64)
+    out = np.zeros(len(close_ts), dtype=np.int8)
+    ok = idx >= 0
+    out[ok] = sign[idx[ok]].astype(np.int8)
+    return out
+
+
+def _filter_candidates(
+    candidates: list[Candidate], bars: Bars, config: RuleConfig
+) -> list[Candidate]:
+    """Apply the V2 gates (higher-timeframe bias, liquidity target)."""
+    if not candidates:
+        return candidates
+    keep = candidates
+    if config.require_htf_bias:
+        bias = _htf_bias(bars, config.htf_minutes)
+        keep = [
+            c for c in keep
+            if int(bias[c.confirm_bar]) * int(c.side) > 0
+        ]
+    if config.require_liquidity_target:
+        keep = [c for c in keep if c.checklist_flags.get("liquidity_target_2r")]
+    return keep
+
+
 def _score_checklist(candidates: list[Candidate]) -> None:
     """Score the checklist **after** every condition has been attached.
 
@@ -1255,6 +1391,83 @@ def _attach_regime(candidates: list[Candidate], bars: Bars, regime) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_managed(
+    cand: "Candidate", bars: Bars, config: RuleConfig
+) -> None:
+    """Resolve one candidate under a partial take-profit / break-even rule.
+
+    The doc's RL layer names three actions; this implements the two that change
+    the *outcome* (a partial take-profit and an optional break-even trigger).
+    A trade's terminal R therefore differs from the plain 1:2 arm, and
+    ``label`` keeps its meaning -- **1 only when the full target is reached** --
+    so a scratch is a 0, not a −1.
+
+    Causal: every level is read from bars at or after the entry bar.
+    """
+    low = bars.low
+    high = bars.high
+    n = len(low)
+    start = cand.entry_bar
+    if start >= n:
+        cand.outcome = "open"
+        return
+    sd = cand.side
+    risk = float(cand.risk)
+    trig = float(cand.entry_price) + sd * config.partial_tp_r * risk
+    stop = float(cand.stop_price)
+    target = float(cand.target_price)
+
+    def first(k: int, price: float, above: bool) -> int:
+        while k < n:
+            e = min(n, k + 512)
+            m = (high[k:e] >= price) if above else (low[k:e] <= price)
+            if m.any():
+                return k + int(m.argmax())
+            k = e
+        return -1
+
+    t_trig = first(start, trig, above=(sd > 0))
+    t_stop = first(start, stop, above=(sd < 0))
+    if t_stop >= 0 and (t_trig < 0 or t_stop <= t_trig):
+        cand.outcome = "stop"
+        cand.r_multiple = -1.0
+        cand.exit_bar = t_stop
+        return
+    if t_trig < 0:
+        # the trigger never fires: the plain outcome stands
+        bar = _first_hit(low, high, start, sd, stop, target)
+        if bar < 0:
+            cand.outcome = "open"
+            cand.r_multiple = float("nan")
+            return
+        hit_stop = (low[bar] <= stop) if sd > 0 else (high[bar] >= stop)
+        cand.outcome = "stop" if hit_stop else "target"
+        cand.r_multiple = -1.0 if hit_stop else config.rr
+        cand.exit_bar = bar
+        return
+
+    frac = config.partial_tp_frac
+    booked = frac * config.partial_tp_r
+    rest = 1.0 - frac
+    rest_stop = float(cand.entry_price) if config.management == "half_tp_be" else stop
+    k = t_trig + 1
+    t_tgt = first(k, target, above=(sd > 0))
+    t_be = first(k, rest_stop, above=(sd < 0)) if k < n else -1
+    if t_tgt >= 0 and (t_be < 0 or t_tgt < t_be):
+        cand.outcome = "target"
+        cand.r_multiple = booked + rest * config.rr
+        cand.exit_bar = t_tgt
+    elif t_be >= 0:
+        cand.outcome = "target" if booked >= config.rr else "stop"
+        cand.r_multiple = booked + rest * (0.0 if config.management == "half_tp_be" else -1.0)
+        cand.exit_bar = t_be
+    else:
+        # still open at the end: book only the partial, the rest is unresolved
+        cand.outcome = "open"
+        cand.r_multiple = float("nan")
+        cand.exit_bar = -1
+
+
 def _resolve_outcomes(candidates: list[Candidate], bars: Bars, config: RuleConfig) -> None:
     """Resolve every candidate **standalone** (as if it were the only position).
 
@@ -1273,6 +1486,11 @@ def _resolve_outcomes(candidates: list[Candidate], bars: Bars, config: RuleConfi
     # setup that stays open to the end of the sample costs nothing
     suffix_min_low = np.minimum.accumulate(low[::-1])[::-1]
     suffix_max_high = np.maximum.accumulate(high[::-1])[::-1]
+    if config.management != "none":
+        for cand in candidates:
+            _resolve_managed(cand, bars, config)
+        return
+
     for cand in candidates:
         scan_start = cand.entry_bar if config.entry_fill == "next_open" else cand.entry_bar + 1
         if scan_start >= n:
