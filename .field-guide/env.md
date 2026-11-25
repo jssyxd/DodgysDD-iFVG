@@ -165,3 +165,24 @@ systemd symlink line and succeeds.)
 Everything published earlier that day — the 43 MB NQ 1-minute parquet, the
 7.2 MB ES one, the roll reports and the three audit reports — was intact on
 the server and needed no republishing.
+
+## 2026-11-25 — the documented GitHub token path is DEAD; use `gh auth token`
+`~/.git-credentials` no longer contains a `ghp_` token at all, and the token in
+`一些必备apikey和环境.txt` now returns **HTTP 401** (revoked, despite the file
+saying it expires 2027-02-18). `scripts/sync_via_api.sh` therefore fails with
+401 until a token is supplied.
+
+What works: the **`gh` CLI is authenticated** (OAuth token in the keyring,
+account `jssyxd`). `gh auth status` confirms it. Push with:
+
+```bash
+cd /home/da/桌面/DodgysDD_ifvg
+GITHUB_TOKEN="$(gh auth token)" bash scripts/sync_via_api.sh 40
+```
+
+SSH is not an option: `~/.ssh/id_ed25519` exists but GitHub rejects it
+(`Permission denied (publickey)`) — the key is not registered on the account.
+
+Note the API push **squashes** everything since the last push into ONE commit
+carrying the whole worktree tree, so several local commits arrive as one (the
+files are all there; only the per-commit history is lost on the remote).
