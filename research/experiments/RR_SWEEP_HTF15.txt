@@ -1,0 +1,43 @@
+===== preset=pine_htf15only rr=1.0 =====
+bars: 3664241  1420153200000000000 -> 1753409640000000000
+PORTFOLIO (1 at a time, drop)    n=4937    win%= 53.2  E[R]=  0.0638  E_net=  0.0063  PF= 1.136  t=  4.49  CI95=[0.036,0.092]
+                                 mean cost=0.0575 R   break-even cost=0.0638 R   PF_net=1.013   total R=315.00   max consec losses=11
+                                 mean cost=0.0575 R   break-even cost=0.0638 R   PF_net=1.013   total R=315.00   max consec losses=11
+candidates=5573  approved=5573  trades=4937
+Sharpe (per trade) = 0.0639   deflated Sharpe = 0.9826   DSR p-value = 0.0174   trials = 64
+===== preset=pine_htf15only rr=1.5 =====
+bars: 3664241  1420153200000000000 -> 1753409640000000000
+PORTFOLIO (1 at a time, drop)    n=4590    win%= 43.1  E[R]=  0.0779  E_net=  0.0206  PF= 1.137  t=  4.26  CI95=[0.042,0.114]
+                                 mean cost=0.0573 R   break-even cost=0.0779 R   PF_net=1.034   total R=357.50   max consec losses=18
+                                 mean cost=0.0573 R   break-even cost=0.0779 R   PF_net=1.034   total R=357.50   max consec losses=18
+candidates=5573  approved=5573  trades=4590
+Sharpe (per trade) = 0.0629   deflated Sharpe = 0.9717   DSR p-value = 0.0283   trials = 64
+===== preset=pine_htf15only rr=2.0 =====
+bars: 3664241  1420153200000000000 -> 1753409640000000000
+PORTFOLIO (1 at a time, drop)    n=4280    win%= 36.1  E[R]=  0.0822  E_net=  0.0251  PF= 1.129  t=  3.73  CI95=[0.039,0.125]
+                                 mean cost=0.0571 R   break-even cost=0.0822 R   PF_net=1.037   total R=352.00   max consec losses=18
+                                 mean cost=0.0571 R   break-even cost=0.0822 R   PF_net=1.037   total R=352.00   max consec losses=18
+candidates=5573  approved=5573  trades=4280
+Sharpe (per trade) = 0.0571   deflated Sharpe = 0.9171   DSR p-value = 0.0829   trials = 64
+===== preset=pine_htf15only rr=2.5 =====
+bars: 3664241  1420153200000000000 -> 1753409640000000000
+PORTFOLIO (1 at a time, drop)    n=4035    win%= 31.7  E[R]=  0.1086  E_net=  0.0514  PF= 1.159  t=  4.23  CI95=[0.058,0.159]
+                                 mean cost=0.0571 R   break-even cost=0.1086 R   PF_net=1.071   total R=438.00   max consec losses=18
+                                 mean cost=0.0571 R   break-even cost=0.1086 R   PF_net=1.071   total R=438.00   max consec losses=18
+candidates=5573  approved=5573  trades=4035
+Sharpe (per trade) = 0.0667   deflated Sharpe = 0.9721   DSR p-value = 0.0279   trials = 64
+===== preset=pine_htf15only rr=3.0 =====
+bars: 3664241  1420153200000000000 -> 1753409640000000000
+PORTFOLIO (1 at a time, drop)    n=3828    win%= 28.1  E[R]=  0.1254  E_net=  0.0685  PF= 1.174  t=  4.31  CI95=[0.068,0.182]
+                                 mean cost=0.0569 R   break-even cost=0.1254 R   PF_net=1.090   total R=480.00   max consec losses=23
+                                 mean cost=0.0569 R   break-even cost=0.1254 R   PF_net=1.090   total R=480.00   max consec losses=23
+candidates=5573  approved=5573  trades=3828
+Sharpe (per trade) = 0.0697   deflated Sharpe = 0.9777   DSR p-value = 0.0223   trials = 64
+===== preset=pine_htf15only rr=4.0 =====
+bars: 3664241  1420153200000000000 -> 1753409640000000000
+PORTFOLIO (1 at a time, drop)    n=3457    win%= 23.2  E[R]=  0.1614  E_net=  0.1047  PF= 1.210  t=  4.49  CI95=[0.091,0.232]
+                                 mean cost=0.0567 R   break-even cost=0.1614 R   PF_net=1.129   total R=558.00   max consec losses=24
+                                 mean cost=0.0567 R   break-even cost=0.1614 R   PF_net=1.129   total R=558.00   max consec losses=24
+candidates=5573  approved=5573  trades=3457
+Sharpe (per trade) = 0.0764   deflated Sharpe = 0.9871   DSR p-value = 0.0129   trials = 64
+RR_SWEEP_DONE

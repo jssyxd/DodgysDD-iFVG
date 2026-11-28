@@ -156,3 +156,71 @@ starts, but both workers died within ~30 s with
 `429 … 已达到 Token Plan 用量上限` (the `minimax-cn` plan is exhausted). The
 worktree was left clean, so nothing was lost. When the quota is gone, the
 captain implements directly.
+
+## 2026-11-28 — the day-based walk-forward planner (`splits.make_folds_days`)
+`dodgys_dd_quant/ml_pipeline/splits.py` gains a second planner:
+15 train / 15 validate / 30 test **days**, stepping forward 30 days per fold
+(128 folds on the ten-year NQ killzone log, 2015-01-02 → 2025-07-24).  The
+monthly plan is byte-identical before and after the change (120 folds, same
+windows, same `asof`).
+
+**Surprise 1 — the day scheme is geometrically fine but statistically starved.**
+A 15-day training window holds **16–64 rows** (median 42) on
+`logs/NQ_1m_pine_kz.parquet` and **83–286** (median 202) on
+`logs/NQ_1m_pine.parquet`, against `MIN_TRAIN_ROWS = 200`: **all 128 folds
+would be skipped as degenerate** on the killzone log and **57 of 128** on the
+unfiltered one.  The monthly 6-month window holds 353–624 / 1383–3076 rows and
+every fold trains.  The day scheme therefore needs a longer training window, a
+lower `MIN_TRAIN_ROWS`, or a shorter label horizon -- the *geometry* is not
+the problem, the *sample size* is.  (Measured with the trainer's own dry run:
+`.venv`/`python3.11 -m dodgys_dd_quant.ml_pipeline.train_meta_labeler
+--dry-run --slice-days`.)
+
+**Surprise 2 — somebody has to pay for the embargo, and it is the training
+window.**  train + valid + gap = 30 days exactly, so the embargo (240 min by
+default) cannot be added on top.  It is taken from the **tail of the training
+window** (`train_end = valid_start - embargo`), which makes `train_end` the
+only boundary off the midnight-UTC grid.  The alternatives were rejected:
+shifting the valid/test windows by the embargo would break "a day boundary is
+midnight UTC" and would leave `asof` ambiguous (the monthly planner can do it
+because month arithmetic preserves the embargo's time-of-day, which is why
+the monthly `asof` is `2015-08-01 04:00` and not midnight).
+
+**Surprise 3 — the two schemes use two different `asof` conventions.**  The
+monthly `asof` is the **instant** the test window opens (`valid_end ==
+test_start`); the day `asof` is the **last calendar day** before the test
+window (`test_start - 1 day`), because the model may know the validation
+days.  `backtest/walk_forward.py` accepts both (its guard is
+`_date_minus_day(test_start) <= asof < test_end`), but the D3 artefact's
+`asof` string therefore means different things per scheme -- the metadata
+now records which one in `asof_basis`.
+
+**Surprise 4 — the day scheme's training windows do not overlap.**  15-day
+windows with a 30-day step are disjoint, where the monthly 6-month/1-month
+windows share five sixths of their data.  The *test* windows still tile
+exactly (step == test), so the out-of-sample predictions concatenate into one
+continuous series exactly as in the monthly scheme.
+
+Note: the day constants (`TRAIN_DAYS`, `VALID_DAYS`, `TEST_DAYS`,
+`FOLD_STEP_DAYS`) live in `splits.py`, not in the package constants module
+(`ml_pipeline/__init__.py`), which was outside this task's file ownership.
+
+## 2026-11-28 — a 95 %-missing optional feature silently discarded 95 % of the training rows
+The trainer builds the training set by dropping every row with a NaN in **any**
+used feature. `resolve_feature_list` only excluded a column that was *entirely*
+NaN. So `vision_confidence` (94.9 % NaN in `NQ_1m_pine.parquet`, because the
+vision layer was run over a 5.9 % stride sample) stayed in the universe and
+reduced a 15-day window from **176 candidates to 3 usable rows** — all 128
+day-slice folds were skipped with `n_train=3..16`.
+Fixed with `MAX_FEATURE_NAN_FRAC = 0.20`: a feature missing more than 20 % of
+its rows is excluded (never imputed), and the usable rows went 3 % → **97.9 %**.
+**Any "optional" feature must be checked for fill rate, not just for existence.**
+
+## 2026-11-28 — the NFS lake dropped AGAIN (second occurrence)
+`mount | grep iflow` was empty and the runner silently read the **7,490-bar**
+stale copy underneath the mount point, producing 15 candidates in 3 s instead of
+5,573 in 3 min. Re-mounting (`sudo -n mount -t nfs ... fnos2.local:/fs/1000/nfs
+~/iflow_lake`) restored the 3,664,241-bar file with no data loss.
+**Every batch script must assert the expected row count before running** — a
+sweep silently produced 6 wrong arms this way. The guard now used is
+`rows < 3_000_000 -> ABORT`.

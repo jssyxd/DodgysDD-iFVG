@@ -14,6 +14,7 @@ data/
 artifacts/
 artifacts_pine/
 artifacts_vision/
+artifacts_day/
 research/candidates/
 *.parquet
 *.zip

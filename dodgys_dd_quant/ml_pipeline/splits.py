@@ -27,6 +27,12 @@ The fold windows tile: with a one-month step and a one-month test window the
 test windows are consecutive, so the out-of-sample predictions can be
 concatenated into one continuous series (the ``qlib`` concept D7 asks to
 reimplement rather than adopt).
+
+There is a second planner, :func:`make_folds_days`, which cuts the same
+sample on **calendar-day** boundaries instead of calendar months: train on
+the previous 15 days, validate on the 15 days after that, trade the next 30
+days, stepping forward 30 days per fold.  It carries the identical purge,
+embargo and forward-only contracts; only the geometry changes.
 """
 
 from __future__ import annotations
@@ -45,7 +51,17 @@ from dodgys_dd_quant.ml_pipeline import (
 )
 from dodgys_dd_quant.ml_pipeline.labels import max_holding_minutes
 
-__all__ = ["Fold", "make_folds", "fold_plan"]
+__all__ = ["Fold", "make_folds", "make_folds_days", "fold_plan"]
+
+# ---------------------------------------------------------------------------
+# The day-based walk-forward geometry (the operator's scheme): train on the
+# previous 15 days, validate on the 15 days after that, trade the next 30 days,
+# stepping forward 30 days per fold.  A day boundary is midnight UTC.
+# ---------------------------------------------------------------------------
+TRAIN_DAYS = 15
+VALID_DAYS = 15
+TEST_DAYS = 30
+FOLD_STEP_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -66,6 +82,12 @@ class Fold:
     test_idx: np.ndarray = field(repr=False, default_factory=lambda: np.empty(0, dtype=np.int64))
     purged_train: int = 0
     purged_valid: int = 0
+    #: The explicit asof boundary.  ``None`` -> the end of the validation
+    #: window (the monthly convention of RULE_SPEC T24/T25).  The day-based
+    #: planner sets it to the **last calendar day before the test window**,
+    #: because a day boundary is midnight UTC: the model may know the
+    #: validation days, and the test window opens on the next midnight.
+    asof_boundary: pd.Timestamp | None = None
 
     @property
     def asof(self) -> pd.Timestamp:
@@ -76,8 +98,22 @@ class Fold:
         applied to trades inside that window.  With this choice the folds
         tile exactly -- fold *i*'s model is in force over fold *i*'s test
         window, and fold *i+1*'s over the next one.
+
+        The day-based planner overrides it with the last **calendar day**
+        before the test window (see ``asof_boundary``); the two conventions
+        describe the same boundary, one as an instant and one as a day.
         """
+        if self.asof_boundary is not None:
+            return self.asof_boundary
         return self.valid_end
+
+    @property
+    def asof_ns(self) -> int:
+        """``asof`` in nanoseconds since the epoch: the **start of the asof
+        day** (UTC midnight), which is the convention the D3 consumer
+        (``backtest.walk_forward``) applies to the artefact's ``asof`` date.
+        """
+        return int(self.asof.floor("D").value)
 
     @property
     def asof_compact(self) -> str:
@@ -245,6 +281,149 @@ def make_folds(
             )
         )
         k += 1
+    return folds
+
+
+def make_folds_days(
+    candidates: pd.DataFrame,
+    *,
+    train_days: int = TRAIN_DAYS,
+    valid_days: int = VALID_DAYS,
+    test_days: int = TEST_DAYS,
+    step_days: int = FOLD_STEP_DAYS,
+    embargo_minutes: int | None = None,
+    bar_interval_minutes: int = DEFAULT_BAR_INTERVAL_MINUTES,
+) -> list[Fold]:
+    """Build the rolling, purged, embargoed walk-forward folds on **day** boundaries.
+
+    The monthly planner (:func:`make_folds`) cuts the sample into calendar
+    months; this one cuts it into calendar **days**.  A day boundary is
+    midnight UTC and the day index of a candidate is the UTC day of its
+    ``ts_event``.
+
+    The geometry mirrors :func:`make_folds` exactly:
+
+    * train on the previous ``train_days`` days,
+    * validate on the ``valid_days`` days after that,
+    * trade the next ``test_days`` days,
+    * and step forward ``step_days`` days per fold.
+
+    The two protections are the same contracts as in the monthly scheme.
+
+    **Purge.**  A sample is kept only when its whole label window lies inside
+    its own window (``ts_event + horizon <= window_end``) -- for the training
+    *and* for the validation fold, because early stopping on the validation
+    labels is a model-selection decision.
+
+    **Embargo.**  ``embargo_minutes`` separates the end of the training window
+    from the start of the validation window.  It defaults to the maximum
+    holding period (``labels.max_holding_minutes``) and a **smaller value is
+    rejected**: a training label could then resolve inside the validation
+    window.  The embargo is paid for by the *tail* of the training window, so
+    the validation and the test windows keep their exact day counts.
+
+    A fold whose training window holds no usable row is **skipped** (it could
+    not produce a model), and the test windows of the emitted folds never
+    overlap: ``step_days`` must be at least ``test_days``.
+
+    Returns
+    -------
+    A list of ``Fold`` objects, oldest first.
+    """
+    if "ts_event" not in candidates.columns:
+        raise ValueError("candidates must carry a 'ts_event' column")
+    if train_days <= 0 or valid_days <= 0 or test_days <= 0 or step_days <= 0:
+        raise ValueError("train/valid/test/step days must all be positive")
+    if step_days < test_days:
+        raise ValueError(
+            f"step_days={step_days} is smaller than test_days={test_days}: the "
+            "out-of-sample test windows would overlap, so the OOS predictions "
+            "could not be concatenated into one continuous series"
+        )
+
+    horizon_minutes = max_holding_minutes(bar_interval_minutes)
+    if embargo_minutes is None:
+        embargo_minutes = horizon_minutes
+    embargo_minutes = int(embargo_minutes)
+    if embargo_minutes < horizon_minutes:
+        raise ValueError(
+            f"embargo_minutes={embargo_minutes} is smaller than the maximum holding "
+            f"period ({horizon_minutes} min = {horizon_minutes // max(1, bar_interval_minutes)} "
+            f"bars). The embargo must be at least the maximum holding period, otherwise a "
+            "training label can resolve inside the validation window."
+        )
+
+    ts = candidates["ts_event"].astype("int64").to_numpy()
+    if ts.size == 0:
+        return []
+    order = np.argsort(ts, kind="stable")
+    ts_sorted = ts[order]
+
+    data_start = pd.Timestamp(int(ts_sorted[0]), unit="ns", tz="UTC")
+    data_end = pd.Timestamp(int(ts_sorted[-1]), unit="ns", tz="UTC")
+    anchor = data_start.floor("D")  # midnight UTC of the first candidate's day
+
+    horizon_ns = horizon_minutes * 60 * 1_000_000_000
+    embargo = pd.Timedelta(minutes=embargo_minutes)
+
+    folds: list[Fold] = []
+    k = 0
+    while True:
+        train_start = anchor + pd.Timedelta(days=k * step_days)
+        valid_start = train_start + pd.Timedelta(days=train_days)
+        valid_end = valid_start + pd.Timedelta(days=valid_days)
+        test_start = valid_end
+        test_end = test_start + pd.Timedelta(days=test_days)
+        if test_start >= data_end:
+            break
+        # the embargo is the gap between the end of the training window and the
+        # start of the validation window: the training window gives up its tail
+        train_end = valid_start - embargo
+
+        train_idx = _window_indices(ts_sorted, order, train_start, train_end)
+        valid_idx = _window_indices(ts_sorted, order, valid_start, valid_end)
+        test_idx = _window_indices(ts_sorted, order, test_start, test_end)
+
+        # --- purge: a sample's label window must stay inside its own window
+        purged_train = 0
+        if train_idx.size:
+            keep = ts[train_idx] + horizon_ns <= train_end.value
+            purged_train = int((~keep).sum())
+            train_idx = train_idx[keep]
+        purged_valid = 0
+        if valid_idx.size:
+            keep = ts[valid_idx] + horizon_ns <= valid_end.value
+            purged_valid = int((~keep).sum())
+            valid_idx = valid_idx[keep]
+
+        index = k
+        k += 1
+        if train_idx.size == 0:
+            # a fold without usable training rows cannot produce a model
+            continue
+
+        folds.append(
+            Fold(
+                index=index,
+                train_start=train_start,
+                train_end=train_end,
+                valid_start=valid_start,
+                valid_end=valid_end,
+                test_start=test_start,
+                test_end=test_end,
+                embargo_minutes=embargo_minutes,
+                horizon_minutes=horizon_minutes,
+                train_idx=train_idx,
+                valid_idx=valid_idx,
+                test_idx=test_idx,
+                purged_train=purged_train,
+                purged_valid=purged_valid,
+                # the model may know the validation days; the test window
+                # opens on the next midnight, so the last known day is the one
+                # before it
+                asof_boundary=test_start - pd.Timedelta(days=1),
+            )
+        )
     return folds
 
 

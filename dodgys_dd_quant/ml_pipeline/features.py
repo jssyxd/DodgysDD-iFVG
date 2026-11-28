@@ -141,6 +141,12 @@ FEATURE_AVAILABILITY: dict[str, str] = {
     "vxn_zscore": "[STATE] causal, over the previous 100 candidates",
 }
 
+#: A feature whose column is missing more than this fraction of its rows is
+#: **excluded** rather than kept: the training set drops every row with a NaN
+#: in any used feature, so a sparse column silently shrinks the sample instead
+#: of contributing a value.  Never imputed.
+MAX_FEATURE_NAN_FRAC: float = 0.20
+
 #: Minutes from the same day's 09:30 ET open -- signed.
 US_OPEN_MINUTES = 9 * 60 + 30  # 570
 
@@ -246,11 +252,20 @@ def resolve_feature_list(
 ) -> tuple[list[str], list[str]]:
     """Split the declared feature universe into (used, excluded).
 
-    A feature is **excluded** when its source column is absent from the
-    candidate log, or when the column is entirely NaN (e.g. the vision columns,
-    which cannot exist until the vision layer is built -- **D12**).  Excluded
-    features are recorded in the artefact metadata; they are never silently
-    imputed.
+    A feature is **excluded** when any of these hold:
+
+    * its source column is absent from the candidate log;
+    * the column is entirely NaN; or
+    * the column is **mostly** NaN -- more than :data:`MAX_FEATURE_NAN_FRAC`
+      of the rows.  This case used to slip through: the training set is built
+      by dropping every row that has a NaN in *any* used feature, so a feature
+      that is 95 % missing silently discards 95 % of the training rows.  On the
+      NQ pine log ``vision_confidence`` is 94.9 % NaN (the vision layer was run
+      over a 5.9 % sample) and it was removing all but **3 of 176** rows from a
+      15-day training window.  The column is excluded, never imputed.
+
+    Excluded features are recorded in the artefact metadata; they are never
+    silently imputed.
     """
     used: list[str] = []
     excluded: list[str] = []
@@ -261,7 +276,10 @@ def resolve_feature_list(
             # a computed feature that could not be computed (all-NaN, e.g. a
             # volume statistic on a series without volume) is excluded exactly
             # like a missing optional column
-            if name in candidates.columns and candidates[name].isna().all():
+            if name in candidates.columns and (
+                candidates[name].isna().all()
+                or candidates[name].isna().mean() > MAX_FEATURE_NAN_FRAC
+            ):
                 excluded.append(name)
                 continue
             used.append(name)
@@ -270,7 +288,7 @@ def resolve_feature_list(
             excluded.append(name)
             continue
         column = candidates[source]
-        if column.isna().all():
+        if column.isna().all() or column.isna().mean() > MAX_FEATURE_NAN_FRAC:
             excluded.append(name)
             continue
         used.append(name)

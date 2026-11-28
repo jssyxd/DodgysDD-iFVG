@@ -85,7 +85,15 @@ from dodgys_dd_quant.ml_pipeline.labels import (
     max_holding_minutes,
     summarize_labels,
 )
-from dodgys_dd_quant.ml_pipeline.splits import Fold, make_folds
+from dodgys_dd_quant.ml_pipeline.splits import (
+    FOLD_STEP_DAYS,
+    TEST_DAYS,
+    TRAIN_DAYS,
+    VALID_DAYS,
+    Fold,
+    make_folds,
+    make_folds_days,
+)
 
 __all__ = [
     "LightGBMUnavailable",
@@ -356,8 +364,30 @@ def plan_folds(
     train_months: int = TRAIN_MONTHS,
     valid_months: int = VALID_MONTHS,
     test_months: int = TEST_MONTHS,
+    slice_days: bool = False,
+    train_days: int = TRAIN_DAYS,
+    valid_days: int = VALID_DAYS,
+    test_days: int = TEST_DAYS,
+    step_days: int = FOLD_STEP_DAYS,
 ) -> list[Fold]:
-    """The fold plan of a run (thin wrapper around ``splits.make_folds``)."""
+    """The fold plan of a run.
+
+    A thin wrapper around the two split planners.  The **monthly** scheme
+    (6 / 1 / 1 months, rolled monthly -- RULE_SPEC T24/T25) is the default
+    and is unchanged; ``slice_days=True`` switches to the **day-based**
+    scheme (train on the previous 15 days, validate on the 15 days after
+    that, trade the next 30 days, stepping forward 30 days per fold).
+    """
+    if slice_days:
+        return make_folds_days(
+            labelled,
+            train_days=train_days,
+            valid_days=valid_days,
+            test_days=test_days,
+            step_days=step_days,
+            embargo_minutes=embargo_minutes,
+            bar_interval_minutes=bar_interval_minutes,
+        )
     return make_folds(
         labelled,
         train_months=train_months,
@@ -380,9 +410,18 @@ def train_walk_forward(
     horizon_bars: int | None = None,
     embargo_minutes: int | None = None,
     bar_interval_minutes: int | None = None,
+    slice_days: bool = False,
+    train_days: int = TRAIN_DAYS,
+    valid_days: int = VALID_DAYS,
+    test_days: int = TEST_DAYS,
+    step_days: int = FOLD_STEP_DAYS,
     dry_run: bool = False,
 ) -> dict:
     """Train the walk-forward meta-labeler and write the D3 artefacts.
+
+    The fold geometry is the monthly scheme by default (RULE_SPEC T24/T25);
+    ``slice_days=True`` switches to the day-based scheme (15 train / 15
+    validate / 30 test days, stepping forward 30 days per fold).
 
     Returns the run report (also written to ``walk_forward_index.json``).
     """
@@ -422,6 +461,11 @@ def train_walk_forward(
         labelled,
         embargo_minutes=embargo_minutes,
         bar_interval_minutes=interval,
+        slice_days=slice_days,
+        train_days=train_days,
+        valid_days=valid_days,
+        test_days=test_days,
+        step_days=step_days,
     )
 
     report: dict[str, Any] = {
@@ -442,12 +486,13 @@ def train_walk_forward(
         "candidate_consistency": consistency,
         "feature_nan_fraction": nan_fractions,
         "n_folds": len(folds),
+        "fold_scheme": "days" if slice_days else "months",
+        "fold_plan": [f.to_dict() for f in folds],
         "folds": [],
     }
 
     if dry_run:
         report["dry_run"] = True
-        report["fold_plan"] = [f.to_dict() for f in folds]
         return report
 
     lgb = _require_lightgbm()
@@ -551,7 +596,11 @@ def _meta_json(
         "symbol": symbol,
         "timeframe": timeframe,
         "asof": fold.asof.strftime("%Y-%m-%d"),
-        "asof_basis": "end of the validation window (= the start of the test window)",
+        "asof_basis": (
+            "the last calendar day before the test window (day-based scheme)"
+            if fold.asof_boundary is not None
+            else "end of the validation window (= the start of the test window)"
+        ),
         "train_start": fold.train_start.strftime("%Y-%m-%d"),
         "train_end": fold.train_end.strftime("%Y-%m-%d"),
         "valid_start": fold.valid_start.strftime("%Y-%m-%d"),
@@ -644,6 +693,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bar-interval-minutes", type=int, default=None)
     parser.add_argument("--extra-features", action="store_true", help="enable the causal extras")
     parser.add_argument(
+        "--slice-days",
+        action="store_true",
+        help="use the day-based walk-forward scheme instead of the monthly one",
+    )
+    parser.add_argument("--train-days", type=int, default=TRAIN_DAYS)
+    parser.add_argument("--valid-days", type=int, default=VALID_DAYS)
+    parser.add_argument("--test-days", type=int, default=TEST_DAYS)
+    parser.add_argument("--step-days", type=int, default=FOLD_STEP_DAYS)
+    parser.add_argument(
         "--dry-run", action="store_true", help="validate the schemas, plan the folds, train nothing"
     )
     return parser
@@ -672,6 +730,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             horizon_bars=args.horizon_bars,
             embargo_minutes=args.embargo_minutes,
             bar_interval_minutes=args.bar_interval_minutes,
+            slice_days=args.slice_days,
+            train_days=args.train_days,
+            valid_days=args.valid_days,
+            test_days=args.test_days,
+            step_days=args.step_days,
             dry_run=args.dry_run,
         )
     except LightGBMUnavailable as exc:
@@ -692,6 +755,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"features excluded : {report['excluded_features']}")
     print(f"embargo           : {report['embargo_minutes']} min")
     print(f"folds             : {report['n_folds']}")
+
+    if args.slice_days:
+        print("\nday-slice fold plan (first three folds):")
+        for fold in report["fold_plan"][:3]:
+            print(
+                f"  #{fold['index']:>3}  asof {fold['asof']}  "
+                f"train {fold['train_start']}..{fold['train_end']}  "
+                f"valid {fold['valid_start']}..{fold['valid_end']}  "
+                f"test {fold['test_start']}..{fold['test_end']}"
+            )
 
     if args.dry_run:
         print("\nfold plan (dry run -- nothing was trained):")

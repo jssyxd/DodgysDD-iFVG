@@ -211,9 +211,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default="research/experiments/DRAWDOWN_CONTROL.md")
     ap.add_argument("--dd-threshold", type=float, default=5.0)
     ap.add_argument("--streak", type=int, default=3)
-    ap.add_argument("--preset", default="pine", choices=["pine", "pine_half_tp",
-                                                         "pine_half_tp_be"],
+    ap.add_argument("--preset", default="pine",
+                    choices=["pine", "pine_half_tp", "pine_half_tp_be",
+                             "pine_htf15only", "pine_htfonly", "pine_liqonly"],
                     help="the rule/management preset to replay")
+    ap.add_argument("--rr", type=float, default=None,
+                    help="override the preset's reward:risk target")
     ap.add_argument("--cost-profile", default=None,
                     help="charge the round trip in R (e.g. 'nq'); None = gross")
     ap.add_argument("--slippage-ticks", type=int, default=1)
@@ -225,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
     raw = load_bars(args.bars, symbol="NQ", timeframe="1m")
     cfg = replace(PRESETS[args.preset], symbol="NQ", timeframe="1m",
                   killzone_gate=True).with_doc_window()
+    if args.rr is not None:
+        cfg = replace(cfg, rr=args.rr)
     log = run_state_machine(raw, cfg, regime=_regime(args.bars))
     traded = simulate_portfolio(log.candidates, len(raw))
     print(f"candidates {len(log.candidates):,} -> portfolio trades {len(traded):,}")

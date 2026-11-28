@@ -20,8 +20,9 @@ from dodgys_dd_quant.ml_pipeline.kaggle_export import (
     render_fold_kernel_source,
 )
 from dodgys_dd_quant.ml_pipeline.labels import max_holding_minutes
-from dodgys_dd_quant.ml_pipeline.splits import make_folds
+from dodgys_dd_quant.ml_pipeline.splits import make_folds, make_folds_days
 
+DAY_ANCHOR = pd.Timestamp("2024-01-01", tz="UTC")
 ANCHOR = pd.Timestamp("2024-01-01", tz="UTC")
 
 
@@ -60,6 +61,16 @@ def _monthly_candidates(n_months: int = 14, per_month: int = 3) -> pd.DataFrame:
         start = ANCHOR + pd.DateOffset(months=m)
         for k in range(per_month):
             rows.append(_candidate(start + pd.Timedelta(days=1, hours=8 + k)))
+    return pd.DataFrame(rows)
+
+
+def _daily_candidates(n_days: int = 200, per_day: int = 3) -> pd.DataFrame:
+    """A synthetic candidate log spread over ``n_days`` calendar days."""
+    rows = []
+    for d in range(n_days):
+        day = DAY_ANCHOR + pd.Timedelta(days=d)
+        for k in range(per_day):
+            rows.append(_candidate(day + pd.Timedelta(hours=8 + k)))
     return pd.DataFrame(rows)
 
 
@@ -339,3 +350,133 @@ def test_dataset_and_kernel_metadata_are_valid_json(tmp_path):
     assert kernel_meta["kernel_type"] == "script"
     assert kernel_meta["dataset_sources"] == ["YOUR_USER/dodgysdd-ifvg-folds"]
     assert plan["folds"] and plan["folds"][0]["test_rows_exported"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 4. the day-based scheme (15 train / 15 validate / 30 test days, step 30)
+# ---------------------------------------------------------------------------
+def test_day_plan_test_windows_are_30_days_and_do_not_overlap():
+    candidates = _daily_candidates(n_days=200)
+    folds = make_folds_days(
+        candidates, train_days=15, valid_days=15, test_days=30, step_days=30
+    )
+    assert len(folds) >= 2
+    for previous, current in zip(folds, folds[1:]):
+        assert current.test_start >= previous.test_end
+    for fold in folds:
+        assert fold.test_end - fold.test_start == pd.Timedelta(days=30)
+        assert fold.valid_end - fold.valid_start == pd.Timedelta(days=15)
+
+
+def test_day_plan_asof_is_the_day_before_the_test_window():
+    """The model may know the validation days; the test window opens on the
+    next midnight, so ``asof`` is exactly the day before ``test_start``."""
+    candidates = _daily_candidates(n_days=200)
+    folds = make_folds_days(
+        candidates, train_days=15, valid_days=15, test_days=30, step_days=30
+    )
+    for fold in folds:
+        assert fold.asof == fold.test_start - pd.Timedelta(days=1)
+        assert fold.asof < fold.test_start
+        assert fold.asof_ns == fold.asof.value
+        # the asof day is the last day of the validation window
+        assert fold.asof == fold.valid_end - pd.Timedelta(days=1)
+
+
+def test_day_plan_embargo_is_never_smaller_than_the_maximum_holding_period():
+    candidates = _daily_candidates(n_days=200)
+    horizon = max_holding_minutes(1)
+    folds = make_folds_days(candidates, train_days=15, valid_days=15, test_days=30, step_days=30)
+    assert horizon == 240
+    for fold in folds:
+        assert fold.embargo_minutes >= horizon
+        assert fold.valid_start - fold.train_end >= pd.Timedelta(minutes=fold.embargo_minutes)
+    # a leaking embargo is rejected, never silently accepted
+    with pytest.raises(ValueError, match="embargo"):
+        make_folds_days(
+            candidates,
+            train_days=15,
+            valid_days=15,
+            test_days=30,
+            step_days=30,
+            embargo_minutes=horizon - 1,
+        )
+
+
+def test_day_plan_on_a_tiny_series_returns_no_folds():
+    """Fewer days than train + valid + test cannot fill a single fold."""
+    candidates = _daily_candidates(n_days=10)
+    assert (
+        make_folds_days(
+            candidates, train_days=15, valid_days=15, test_days=30, step_days=30
+        )
+        == []
+    )
+
+
+def test_day_plan_purges_the_training_tail():
+    """No training sample may own time that reaches into the validation window."""
+    candidates = _daily_candidates(n_days=200)
+    folds = make_folds_days(
+        candidates, train_days=15, valid_days=15, test_days=30, step_days=30
+    )
+    horizon_ns = max_holding_minutes(1) * 60 * 1_000_000_000
+    ts = candidates["ts_event"].to_numpy()
+    for fold in folds:
+        assert fold.train_idx.size > 0
+        assert (ts[fold.train_idx] + horizon_ns <= fold.train_end.value).all()
+        assert (ts[fold.valid_idx] + horizon_ns <= fold.valid_end.value).all()
+        # the three windows are disjoint
+        assert set(fold.train_idx.tolist()) & set(fold.valid_idx.tolist()) == set()
+        assert set(fold.train_idx.tolist()) & set(fold.test_idx.tolist()) == set()
+        assert set(fold.valid_idx.tolist()) & set(fold.test_idx.tolist()) == set()
+
+
+def test_day_plan_folds_are_accepted_by_the_forward_only_guard():
+    """The D3 consumer must accept every fold the day planner emits."""
+    from pathlib import Path
+    from dodgys_dd_quant.backtest.walk_forward import (
+        Fold as BacktestFold,
+        assert_forward_only,
+        walk_forward,
+    )
+    candidates = _daily_candidates(n_days=200)
+    folds = make_folds_days(
+        candidates, train_days=15, valid_days=15, test_days=30, step_days=30
+    )
+    for fold in folds:
+        backtest_fold = BacktestFold(
+            asof=fold.asof.strftime("%Y-%m-%d"),
+            asof_ns=fold.asof_ns,
+            directory=Path("."),
+            test_start=fold.test_start.strftime("%Y-%m-%d"),
+            test_end=fold.test_end.strftime("%Y-%m-%d"),
+        )
+        # the guard raises ForwardOnlyViolation when the asof is outside the
+        # fold's own test window
+        walk_forward([], 0, [backtest_fold])
+        assert_forward_only(backtest_fold, int(fold.test_start.value) + 1)
+
+
+def test_day_plan_rejects_a_step_smaller_than_the_test_window():
+    """Overlapping out-of-sample windows could not be concatenated."""
+    candidates = _daily_candidates(n_days=200)
+    with pytest.raises(ValueError, match="overlap"):
+        make_folds_days(
+            candidates, train_days=15, valid_days=15, test_days=30, step_days=15
+        )
+
+
+def test_plan_folds_switches_between_the_monthly_and_the_day_scheme():
+    from dodgys_dd_quant.ml_pipeline.train_meta_labeler import plan_folds
+    candidates = _monthly_candidates()
+    monthly = plan_folds(candidates, embargo_minutes=240, bar_interval_minutes=1)
+    daily = plan_folds(
+        candidates, embargo_minutes=240, bar_interval_minutes=1, slice_days=True
+    )
+    # the monthly path is untouched: asof is the end of the validation window
+    assert monthly[0].asof == monthly[0].valid_end
+    assert monthly[0].asof == monthly[0].test_start
+    # the day scheme: asof is the day before the test window
+    assert daily[0].asof == daily[0].test_start - pd.Timedelta(days=1)
+    assert daily[0].test_end - daily[0].test_start == pd.Timedelta(days=30)
